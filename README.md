@@ -132,6 +132,122 @@ python example_fully_automatic.py
 
 **适合生产环境的持续优化**。
 
+**适合生产环境的持续优化**。
+
+### 示例 5: 树感知优化（自动拆分 & 剪枝）
+
+```bash
+python example_tree_optimization.py
+```
+
+展示如何使用 TreeAwareOptimizer 进行树感知优化：
+- **自动拆分**: 检测到矛盾反馈时自动拆分 skill 为子 skills
+- **自动剪枝**: 根据性能指标自动移除低效子 skill
+- **部分优化**: 支持只修改 prompt 的某一部分（指令、示例、约束）
+- **树感知优化**: 递归优化整棵 skill 树（bottom-up）
+
+**优化流程**:
+
+```mermaid
+graph TD
+    A[加载 Skill 树] --> B[收集 Experiences]
+    B --> C[创建 TreeAwareOptimizer]
+    C --> D[运行树优化]
+
+    D --> E{遍历每个节点<br/>bottom-up}
+    E --> F[单点优化]
+    F --> G{需要拆分?}
+
+    G -->|检测到矛盾反馈| H[自动拆分]
+    H --> I[生成子 Skills]
+    I --> J{需要剪枝?}
+
+    G -->|无需拆分| J
+    J -->|性能低于阈值| K[自动剪枝]
+    J -->|性能良好| L[保留节点]
+
+    K --> M[保存优化后的树]
+    L --> M
+    I --> M
+
+    style A fill:#e1f5ff
+    style B fill:#e1f5ff
+    style F fill:#fff9c4
+    style H fill:#ffcdd2
+    style K fill:#ffcdd2
+    style M fill:#c8e6c9
+```
+
+**核心功能**:
+
+1. **自动拆分分析**
+   ```mermaid
+   graph LR
+       A[分析反馈] --> B{存在矛盾?}
+       B -->|是| C[生成子规格]
+       B -->|否| D[保持现状]
+       C --> E[创建子 Skills]
+   ```
+
+2. **自动剪枝判断**
+   ```mermaid
+   graph TD
+       A[收集性能指标] --> B{性能分数 < 阈值?}
+       B -->|是| C[标记剪枝]
+       B -->|否| D{使用频率极低?}
+       D -->|是| C
+       D -->|否| E{成功率 < 30%?}
+       E -->|是| C
+       E -->|否| F[保留节点]
+   ```
+
+3. **部分优化策略**
+   - `all`: 完整优化（默认）
+   - `instruction`: 只优化指令部分
+   - `examples`: 只优化 few-shot examples
+   - `constraints`: 只优化约束条件
+
+**使用示例**:
+
+```python
+from evoskill import (
+    SkillTree,
+    OpenAIAdapter,
+    TreeAwareOptimizer,
+    TreeOptimizerConfig,
+)
+
+# 1. 创建组件
+adapter = OpenAIAdapter(model="gpt-4o-mini")
+config = TreeOptimizerConfig(
+    auto_split=True,      # 启用自动拆分
+    auto_prune=True,      # 启用自动剪枝
+    prune_threshold=0.3,  # 剪枝阈值
+    section="all",        # 优化整个 prompt
+)
+tree_optimizer = TreeAwareOptimizer(
+    adapter=adapter,
+    config=config,
+)
+
+# 2. 加载 skill 树
+tree = SkillTree.load("my-skills/")
+
+# 3. 收集 experiences
+experiences = load_experiences("traces.jsonl")
+
+# 4. 优化树
+result = tree_optimizer.optimize_tree(tree, experiences)
+
+# 5. 查看结果
+print(f"✓ 优化了 {result.nodes_optimized} 个节点")
+print(f"✓ 拆分了 {result.splits_performed} 次")
+print(f"✓ 剪枝了 {result.prunes_performed} 个节点")
+
+# 6. 保存
+result.tree.save("my-skills-optimized/")
+```
+
 ### 示例 4: 加载已存储的 Skill 和配置
 
 **详细使用指南**: 请查看 [`USAGE_GUIDE.md`](./USAGE_GUIDE.md) 获取完整的配置和 Skill 管理说明。
@@ -261,6 +377,7 @@ evoskill/                    # 核心模块
 │   ├── experience.py      # 经验和反馈 (Conversation, Multimodal)
 │   ├── base_adapter.py    # 适配器基类 (compute_gradient, apply_gradient)
 │   ├── optimizer.py       # TrainFreeOptimizer (TGD 核心算法)
+│   ├── tree_optimizer.py  # TreeAwareOptimizer (树感知优化) ⭐ NEW
 │   ├── strategies.py      # 优化策略 (保守/激进/自适应)
 │   └── validators.py      # 验证器 (Auto, Metric, Composite)
 │
@@ -283,9 +400,43 @@ evoskill/                    # 核心模块
 |------|------|---------|
 | **核心抽象** | 定义统一接口 | `evoskill/core/abc.py` |
 | **优化引擎** | TGD 优化算法 | `evoskill/core/optimizer.py` |
+| **树优化器** | 树感知优化（拆分/剪枝）| `evoskill/core/tree_optimizer.py` ⭐ NEW |
 | **模型适配器** | 连接不同 LLM | `evoskill/adapters/` |
 | **插件系统** | 注册自定义组件 | `evoskill/registry.py` |
 | **工具系统** | 注册第三方工具 | `evoskill/tools.py` |
+
+### 树感知优化架构
+
+```mermaid
+graph TD
+    A[TreeAwareOptimizer] --> B[配置 TreeOptimizerConfig]
+    A --> C[基础优化器 TrainFreeOptimizer]
+
+    A --> D[主流程 optimize_tree]
+    D --> E[遍历树 bottom-up]
+
+    E --> F[analyze_split_need]
+    E --> G[generate_child_prompts]
+    E --> H[analyze_prune_need]
+    E --> I[optimize_prompt_section]
+
+    F --> J{需要拆分?}
+    J -->|矛盾反馈| K[生成子 specs]
+    K --> G
+    G --> L[创建子 Skills]
+
+    I --> M{需要剪枝?}
+    H --> M
+    M -->|低性能| N[移除节点]
+    M -->|高性能| O[保留节点]
+
+    style A fill:#e1f5ff
+    style D fill:#fff9c4
+    style F fill:#ffcdd2
+    style G fill:#ffcdd2
+    style H fill:#ffcdd2
+    style I fill:#fff9c4
+```
 
 ### 向后兼容
 
@@ -406,8 +557,11 @@ graph LR
 - **目标导向** - 设了 `/target` 后，梯度分析和 prompt 重写都会以这个方向为指导
 - **层级优化** - Skill 树模式下，优化是**底向上**的：先优化叶子节点，再优化父节点
 - **自动拆分** - 优化过程中可能**自动拆分**：如果不同任务的反馈互相矛盾 → 建议拆分为子技能
+- **自动剪枝** - 根据性能指标自动移除低效子节点
+- **树感知优化** - 攌持拆分、剪枝，递归优化整棵树（⭐ 新 in v0.2.0)
 - **策略选择** - 支持保守/激进/自适应三种优化策略
 - **验证机制** - 支持自动验证、指标验证、组合验证
+- **部分优化** - 支持只优化 prompt 的特定部分（指令、示例、约束）⭐ NEW in v0.2.0
 
 ## 配置参考
 

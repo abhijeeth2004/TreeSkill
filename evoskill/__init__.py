@@ -55,6 +55,11 @@ try:
         CompositeValidator,
         create_simple_validator,
         create_metric_validator,
+
+        # Tree Optimizer
+        TreeAwareOptimizer,
+        TreeOptimizerConfig,
+        TreeOptimizationResult,
     )
 except ImportError as e:
     missing_module = str(e).split("'")[-2] if "'" in str(e) else "unknown"
@@ -204,6 +209,11 @@ __all__ = [
     "CompositeValidator",
     "create_simple_validator",
     "create_metric_validator",
+
+    # Tree Optimizer
+    "TreeAwareOptimizer",
+    "TreeOptimizerConfig",
+    "TreeOptimizationResult",
 
     # Model adapters (new)
     "OpenAIAdapter",

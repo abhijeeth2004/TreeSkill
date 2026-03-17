@@ -596,3 +596,48 @@ def hook(event: str, priority: int = 100):
         registry.register_hook(event, func, priority=priority)
         return func
     return decorator
+
+
+# ---------------------------------------------------------------------------
+# Convenience Functions for Tree Optimizer
+# ---------------------------------------------------------------------------
+
+def create_tree_optimizer(
+    adapter: ModelAdapter,
+    config: Optional[Any] = None,
+    base_optimizer: Optional[Any] = None,
+):
+    """Create a TreeAwareOptimizer instance.
+
+    This is a convenience function that creates a tree optimizer
+    with sensible defaults.
+
+    Parameters
+    ----------
+    adapter : ModelAdapter
+        The model adapter to use.
+    config : Optional[TreeOptimizerConfig]
+        Tree optimization config.
+    base_optimizer : Optional[TrainFreeOptimizer]
+        Base optimizer for single-point optimization.
+
+    Returns
+    -------
+    TreeAwareOptimizer
+        Configured tree optimizer.
+
+    Examples
+    --------
+    >>> from evoskill import OpenAIAdapter, create_tree_optimizer
+    >>> adapter = OpenAIAdapter(model="gpt-4o-mini")
+    >>> tree_optimizer = create_tree_optimizer(adapter)
+    """
+    from evoskill.core.tree_optimizer import TreeAwareOptimizer, TreeOptimizerConfig
+
+    tree_config = config or TreeOptimizerConfig()
+
+    return TreeAwareOptimizer(
+        adapter=adapter,
+        base_optimizer=base_optimizer,
+        config=tree_config,
+    )

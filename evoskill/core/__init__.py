@@ -50,6 +50,11 @@ from evoskill.core.validators import (
     create_simple_validator,
     create_metric_validator,
 )
+from evoskill.core.tree_optimizer import (
+    TreeAwareOptimizer,
+    TreeOptimizerConfig,
+    TreeOptimizationResult,
+)
 
 __all__ = [
     # Abstract base classes
@@ -92,4 +97,8 @@ __all__ = [
     "CompositeValidator",
     "create_simple_validator",
     "create_metric_validator",
+    # Tree Optimizer
+    "TreeAwareOptimizer",
+    "TreeOptimizerConfig",
+    "TreeOptimizationResult",
 ]
