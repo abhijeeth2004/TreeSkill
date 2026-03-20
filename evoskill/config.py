@@ -21,10 +21,30 @@ from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
+def _settings_config(*, env_prefix: str) -> SettingsConfigDict:
+    return SettingsConfigDict(
+        env_prefix=env_prefix,
+        env_file=".env",
+        env_file_encoding="utf-8",
+        extra="ignore",
+    )
+
+
+def _merge_settings_section(
+    section_cls: type[BaseSettings],
+    yaml_values: Optional[Dict[str, Any]] = None,
+) -> BaseSettings:
+    env_section = section_cls()
+    merged = dict(yaml_values or {})
+    for field_name in env_section.model_fields_set:
+        merged[field_name] = getattr(env_section, field_name)
+    return section_cls(**merged)
+
+
 class LLMConfig(BaseSettings):
     """OpenAI-compatible LLM connection settings."""
 
-    model_config = SettingsConfigDict(env_prefix="EVO_LLM_")
+    model_config = _settings_config(env_prefix="EVO_LLM_")
 
     api_key: SecretStr = Field(default=SecretStr(""), description="OpenAI API key")
     base_url: str = Field(
@@ -41,7 +61,7 @@ class LLMConfig(BaseSettings):
 class StorageConfig(BaseSettings):
     """Paths for traces and skill files."""
 
-    model_config = SettingsConfigDict(env_prefix="EVO_STORAGE_")
+    model_config = _settings_config(env_prefix="EVO_STORAGE_")
 
     trace_path: Path = Field(default=Path("./data/traces.jsonl"))
     skill_path: Path = Field(default=Path("./skills"))
@@ -50,7 +70,7 @@ class StorageConfig(BaseSettings):
 class APOConfig(BaseSettings):
     """Automatic Prompt Optimization hyper-parameters."""
 
-    model_config = SettingsConfigDict(env_prefix="EVO_APO_")
+    model_config = _settings_config(env_prefix="EVO_APO_")
 
     max_steps: int = Field(default=3, ge=1)
     gradient_accumulation_steps: int = Field(default=5, ge=1)
@@ -62,7 +82,7 @@ class RewardConfig(BaseSettings):
     When ``model`` is None, falls back to ``LLMConfig.judge_model``.
     """
 
-    model_config = SettingsConfigDict(env_prefix="EVO_REWARD_")
+    model_config = _settings_config(env_prefix="EVO_REWARD_")
 
     enabled: bool = Field(
         default=False,
@@ -101,7 +121,6 @@ class GlobalConfig(BaseSettings):
         env_prefix="EVO_",
         env_file=".env",
         env_file_encoding="utf-8",
-        env_nested_delimiter="__",
         extra="ignore",
     )
 
@@ -129,8 +148,19 @@ class GlobalConfig(BaseSettings):
               auto_judge: false
 
         Environment variables and ``.env`` still take priority over
-        the YAML values (Pydantic-settings precedence).
+        the YAML values.
         """
         path = Path(path)
         raw: Dict[str, Any] = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-        return cls(**raw)
+        env_config = cls()
+        verbose = raw.get("verbose", env_config.verbose)
+        if "verbose" in env_config.model_fields_set:
+            verbose = env_config.verbose
+
+        return cls(
+            llm=_merge_settings_section(LLMConfig, raw.get("llm")),
+            storage=_merge_settings_section(StorageConfig, raw.get("storage")),
+            apo=_merge_settings_section(APOConfig, raw.get("apo")),
+            reward=_merge_settings_section(RewardConfig, raw.get("reward")),
+            verbose=verbose,
+        )

@@ -78,7 +78,7 @@ SkillTree.save(directory)
 
 ### config.py — 配置系统
 - 使用 `pydantic-settings`，支持 `.env` 文件和 `EVO_` 前缀环境变量
-- 嵌套配置用 `__` 分隔（如 `EVO_LLM__MODEL`）
+- `.env` / 环境变量使用扁平键（如 `EVO_LLM_MODEL`）
 - **支持 YAML 配置文件**：`GlobalConfig.from_yaml(path)` 从 YAML 加载，`--config` 传入
 - **优先级**：环境变量 > `.env` > YAML 文件 > 默认值
 - `GlobalConfig` 聚合 `LLMConfig`、`StorageConfig`、`APOConfig`、**`RewardConfig`**
