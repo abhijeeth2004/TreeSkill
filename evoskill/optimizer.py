@@ -5,8 +5,12 @@ of traces (with feedback), it:
 
 1. **Diagnoses** failures using critique / correction annotations.
 2. **Computes a "gradient"** by asking a judge model *why* the prompt failed.
-3. **Updates** the system prompt by asking the judge to rewrite it.
-4. **Applies** the change, returning a new Skill with an incremented version.
+   Uses multiple gradient templates for diversity (inspired by Microsoft
+   agent-lightning).
+3. **Generates N candidate** rewrites using different edit strategies.
+4. **Scores** each candidate against the feedback traces.
+5. **Selects** the best candidate (or keeps the original if none improve).
+6. **Applies** the change, returning a new Skill with an incremented version.
 
 Tree-aware extensions:
 - ``analyze_split_need`` — detect when a skill should be split
@@ -18,6 +22,7 @@ from __future__ import annotations
 
 import json
 import logging
+import random
 from typing import Dict, List, Optional, TYPE_CHECKING
 
 from evoskill.config import GlobalConfig
@@ -31,8 +36,62 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+# ---------------------------------------------------------------------------
+# Gradient prompt templates — 3 variants for diversity
+# ---------------------------------------------------------------------------
+
+_GRADIENT_TEMPLATES = [
+    # Variant 1: Simple, direct
+    (
+        "You are an expert prompt engineer. Analyze the conversation failures "
+        "below and explain concisely WHY the system prompt led to these problems. "
+        "Return a bullet list of specific, actionable issues."
+    ),
+    # Variant 2: Root-cause focused
+    (
+        "You are a senior prompt debugger. For each failure below, identify the "
+        "ROOT CAUSE in the system prompt — what instruction is missing, ambiguous, "
+        "or misleading? Be specific: quote the problematic part of the prompt and "
+        "explain how it caused the failure. Return 3-5 bullets."
+    ),
+    # Variant 3: Comprehensive evaluation
+    (
+        "You are a prompt quality auditor. Evaluate the system prompt against "
+        "these failures across these dimensions:\n"
+        "1. Instruction clarity — are the rules unambiguous?\n"
+        "2. Tone/style control — does the prompt prevent AI-sounding language?\n"
+        "3. Scope constraints — does the prompt enforce length/format limits?\n"
+        "4. Edge cases — does the prompt handle the scenarios that failed?\n"
+        "Return a structured critique with specific fixes for each dimension."
+    ),
+]
+
+# ---------------------------------------------------------------------------
+# Edit prompt templates — 2 variants (full rewrite vs conservative)
+# ---------------------------------------------------------------------------
+
+_EDIT_TEMPLATES = [
+    # Variant 1: Full rewrite
+    (
+        "You are an expert prompt engineer. Based on the failure analysis below, "
+        "rewrite the System Prompt to fix ALL identified issues. You may "
+        "restructure, reorder, or add new instructions as needed. "
+        "Preserve the core intent and any domain-specific knowledge. "
+        "Return ONLY the new prompt — no commentary, no markdown code fences."
+    ),
+    # Variant 2: Conservative one-point fix
+    (
+        "You are an expert prompt engineer. Based on the failure analysis below, "
+        "revise the System Prompt to address the SINGLE MOST CRITICAL issue. "
+        "Make minimal changes — keep the prompt close in tone, length, and "
+        "structure to the original. Do not address more than one issue. "
+        "Return ONLY the new prompt — no commentary, no markdown code fences."
+    ),
+]
+
+
 class APOEngine:
-    """Automatic Prompt Optimization engine.
+    """Automatic Prompt Optimization engine with multi-candidate scoring.
 
     Parameters
     ----------
@@ -53,51 +112,71 @@ class APOEngine:
     def optimize(self, current_skill: Skill, traces: List[Trace]) -> Skill:
         """Run a single APO cycle and return an improved Skill.
 
-        Parameters
-        ----------
-        current_skill :
-            The skill whose system prompt will be refined.
-        traces :
-            Interaction traces **that already have feedback attached**.
-            Traces without feedback are silently ignored.
+        Flow:
+        1. Diagnose — select traces with feedback
+        2. Gradient — compute textual gradient (randomly chosen template)
+        3. Candidates — generate N candidate rewrites
+        4. Score — evaluate each candidate against the traces
+        5. Select — pick the best (or keep original if none improve)
         """
-        # Step 1 — Diagnosis: select traces with feedback
+        # Step 1 — Diagnosis
         diagnosed = [t for t in traces if t.feedback is not None]
         if not diagnosed:
             logger.info("No feedback traces available — skipping optimization.")
             return current_skill
 
-        # Respect gradient_accumulation_steps — take the N most recent
         batch_size = self._config.apo.gradient_accumulation_steps
         diagnosed = diagnosed[-batch_size:]
 
-        # Step 2 — Gradient: ask the judge WHY the prompt failed
+        # Step 2 — Gradient (random template for diversity)
         gradient = self._compute_gradient(current_skill, diagnosed)
         logger.debug("Gradient analysis:\n%s", gradient)
 
-        # Step 3 — Update: ask the judge to REWRITE the prompt
-        new_prompt = self._apply_update(current_skill, gradient)
-        logger.debug("Updated system prompt:\n%s", new_prompt)
+        # Step 3 — Generate N candidates
+        num_candidates = self._config.apo.num_candidates
+        candidates: List[str] = []
+        for _ in range(num_candidates):
+            new_prompt = self._apply_update(current_skill, gradient)
+            candidates.append(new_prompt)
 
-        # Step 4 — Apply: build the new Skill with bumped version
+        # Step 4 — Score candidates + original
+        best_prompt = current_skill.system_prompt
+        best_score = self._score_prompt(current_skill.system_prompt, diagnosed)
+        logger.info("Current prompt score: %.2f", best_score)
+
+        for i, candidate in enumerate(candidates):
+            score = self._score_prompt(candidate, diagnosed)
+            logger.info("Candidate %d score: %.2f", i + 1, score)
+            if score > best_score:
+                best_score = score
+                best_prompt = candidate
+
+        # Step 5 — Accept or reject
+        if best_prompt == current_skill.system_prompt:
+            logger.info("No candidate improved over current — keeping original.")
+            return current_skill
+
         new_version = _increment_version(current_skill.version)
+        logger.info("Accepted candidate (score=%.2f) → %s", best_score, new_version)
         return current_skill.model_copy(
             update={
-                "system_prompt": new_prompt,
+                "system_prompt": best_prompt,
                 "version": new_version,
             }
         )
 
     # ------------------------------------------------------------------
-    # Private helpers
+    # Gradient computation (with template diversity)
     # ------------------------------------------------------------------
 
     def _compute_gradient(self, skill: Skill, traces: List[Trace]) -> str:
-        """Ask the judge model to explain *why* the current prompt failed."""
+        """Ask the judge model to explain *why* the current prompt failed.
+
+        Randomly selects one of 3 gradient templates for diversity.
+        """
         failure_descriptions: List[str] = []
         for t in traces:
             feedback: Feedback = t.feedback  # type: ignore[assignment]
-            feedback_text = ""
             if feedback.correction:
                 feedback_text = f"The ideal response should have been: {feedback.correction}"
             elif feedback.critique:
@@ -105,7 +184,6 @@ class APOEngine:
             else:
                 feedback_text = f"Score: {feedback.score}"
 
-            # Summarize the user turn (last user message)
             user_text = _extract_last_user_text(t.inputs)
             agent_text = (
                 t.prediction.content
@@ -121,6 +199,9 @@ class APOEngine:
 
         failures_block = "\n".join(failure_descriptions)
 
+        # Randomly select gradient template
+        system_prompt = random.choice(_GRADIENT_TEMPLATES)
+
         target_hint = ""
         if skill.target:
             target_hint = (
@@ -129,21 +210,13 @@ class APOEngine:
             )
 
         messages = [
-            Message(
-                role="system",
-                content=(
-                    "You are an expert prompt engineer. Your task is to "
-                    "analyze conversation failures and explain WHY the "
-                    "system prompt failed to guide the agent correctly."
-                    + target_hint
-                ),
-            ),
+            Message(role="system", content=system_prompt + target_hint),
             Message(
                 role="user",
                 content=(
                     f"The current System Prompt is:\n\"\"\"\n{skill.system_prompt}\n\"\"\"\n\n"
                     f"Here are the failures:\n{failures_block}\n\n"
-                    "Explain concisely why the system prompt led to these failures."
+                    "Analyze the failures now."
                 ),
             ),
         ]
@@ -152,8 +225,17 @@ class APOEngine:
         )
         return response.content if isinstance(response.content, str) else str(response.content)
 
+    # ------------------------------------------------------------------
+    # Apply update (with edit strategy diversity)
+    # ------------------------------------------------------------------
+
     def _apply_update(self, skill: Skill, gradient: str) -> str:
-        """Ask the judge model to rewrite the system prompt."""
+        """Ask the judge model to rewrite the system prompt.
+
+        Randomly selects between full-rewrite and conservative one-point fix.
+        """
+        system_prompt = random.choice(_EDIT_TEMPLATES)
+
         target_hint = ""
         if skill.target:
             target_hint = (
@@ -162,17 +244,7 @@ class APOEngine:
             )
 
         messages = [
-            Message(
-                role="system",
-                content=(
-                    "You are an expert prompt engineer. Based on the analysis "
-                    "of failures below, rewrite the System Prompt to fix the "
-                    "identified issues WITHOUT breaking existing functionality. "
-                    "Return ONLY the new prompt — no commentary, no markdown "
-                    "code fences, just the raw prompt text."
-                    + target_hint
-                ),
-            ),
+            Message(role="system", content=system_prompt + target_hint),
             Message(
                 role="user",
                 content=(
@@ -186,6 +258,69 @@ class APOEngine:
             messages, model=self._config.llm.judge_model
         )
         return response.content if isinstance(response.content, str) else str(response.content)
+
+    # ------------------------------------------------------------------
+    # Candidate scoring (lightweight validation)
+    # ------------------------------------------------------------------
+
+    def _score_prompt(self, prompt: str, traces: List[Trace]) -> float:
+        """Score a prompt against feedback traces using the judge model.
+
+        Returns a float 0.0–1.0.  The judge evaluates how well the prompt
+        would address the failures described in the traces.
+        """
+        failure_summaries: List[str] = []
+        for t in traces:
+            fb: Feedback = t.feedback  # type: ignore[assignment]
+            user_text = _extract_last_user_text(t.inputs)
+            critique = fb.critique or fb.correction or f"score={fb.score}"
+            failure_summaries.append(f"- \"{user_text}\" → {critique}")
+
+        failures_block = "\n".join(failure_summaries)
+
+        messages = [
+            Message(
+                role="system",
+                content=(
+                    "You are a prompt quality evaluator. Score how well the "
+                    "given System Prompt would handle the listed failure cases. "
+                    "Consider whether the prompt's instructions would prevent "
+                    "each failure from recurring.\n\n"
+                    "Return ONLY a JSON object: {\"score\": <float 0.0-1.0>, "
+                    "\"reason\": \"<brief explanation>\"}\n"
+                    "No other text."
+                ),
+            ),
+            Message(
+                role="user",
+                content=(
+                    f"System Prompt to evaluate:\n\"\"\"\n{prompt}\n\"\"\"\n\n"
+                    f"Known failure cases:\n{failures_block}"
+                ),
+            ),
+        ]
+        response = self._llm.generate(
+            messages, model=self._config.llm.judge_model
+        )
+        raw = response.content if isinstance(response.content, str) else str(response.content)
+        raw = raw.strip()
+
+        # Parse score from JSON response
+        try:
+            # Handle markdown-wrapped JSON
+            if raw.startswith("```"):
+                raw = raw.split("```")[1]
+                if raw.startswith("json"):
+                    raw = raw[4:]
+                raw = raw.strip()
+            data = json.loads(raw)
+            score = float(data.get("score", 0.5))
+            reason = data.get("reason", "")
+            logger.debug("Score %.2f — %s", score, reason)
+            return max(0.0, min(1.0, score))
+        except (json.JSONDecodeError, ValueError, TypeError):
+            logger.warning("Failed to parse score from: %s", raw[:100])
+            return 0.5  # neutral fallback
 
     # ------------------------------------------------------------------
     # Tree-aware optimization
@@ -308,21 +443,6 @@ class APOEngine:
         If *auto_split* is ``True``, the engine will analyse each node
         for potential splits and apply them automatically.
 
-        Parameters
-        ----------
-        tree :
-            The skill tree to optimise in-place.
-        traces :
-            Interaction traces with feedback.
-        auto_split :
-            Whether to auto-analyse nodes for splitting.
-        resume :
-            Resume state for crash recovery. If provided, already-completed
-            nodes are skipped, and progress is saved after each node.
-        on_node_done :
-            Optional callback ``(dotpath: str, node: SkillNode) -> None``
-            called after each node is optimised. Useful for progress display.
-
         Returns the mutated tree (same object).
         """
         self._evolve_node(
@@ -350,14 +470,13 @@ class APOEngine:
 
         Order:
         1. Recurse into existing children (bottom-up)
-        2. Optimise this node
+        2. Optimise this node (with multi-candidate scoring)
         3. Auto-split if leaf node with conflicting feedback
         4. Recurse into newly created children (so they get optimised too)
         5. Save checkpoint
         """
         from evoskill.skill_tree import SkillNode  # noqa: deferred
 
-        # Build this node's dotpath for resume tracking
         dotpath = f"{_path_prefix}.{node.name}" if _path_prefix else node.name
 
         # Step 1: Recurse into existing children (bottom-up)
@@ -393,7 +512,6 @@ class APOEngine:
                 enriched = self.generate_child_prompts(node.skill, specs)
                 child_names = []
                 for spec in enriched:
-                    # Validate spec has required fields
                     if "name" not in spec:
                         continue
                     child_skill = node.skill.model_copy(
@@ -416,25 +534,23 @@ class APOEngine:
                 if child_names:
                     logger.info(
                         "Auto-split '%s' into %d children: %s",
-                        node.name,
-                        len(child_names),
-                        child_names,
+                        node.name, len(child_names), child_names,
                     )
                     if resume:
                         resume.mark_node_split(dotpath, child_names)
 
-        # Step 4: Optimise newly created children (so they don't wait until next round)
+        # Step 4: Optimise newly created children
         for child_node in new_children:
             self._evolve_node(
                 child_node, traces,
                 tree=tree,
-                auto_split=False,  # don't split children of a just-split node
+                auto_split=False,
                 resume=resume,
                 on_node_done=on_node_done,
                 _path_prefix=dotpath,
             )
 
-        # Step 5: Checkpoint — save tree + mark node done
+        # Step 5: Checkpoint
         if resume:
             tree.save()
             resume.mark_node_done(dotpath)
@@ -442,6 +558,7 @@ class APOEngine:
 
         if on_node_done:
             on_node_done(dotpath, node)
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -451,7 +568,7 @@ def _increment_version(version: str) -> str:
     """Bump the last numeric segment of a version string.
 
     Examples: ``v1.0`` → ``v1.1``, ``1.0`` → ``1.1``,
-    ``v1.0.2`` → ``v1.0.3``, ``v2`` → ``v2.1``.
+    ``v1.0.2`` → ``v1.0.3``, ``v2`` → ``v3``.
     """
     prefix = ""
     v = version
@@ -460,13 +577,11 @@ def _increment_version(version: str) -> str:
         v = v[1:]
 
     parts = v.split(".")
-    # Bump the last numeric part
     for i in range(len(parts) - 1, -1, -1):
         if parts[i].isdigit():
             parts[i] = str(int(parts[i]) + 1)
             return prefix + ".".join(parts)
 
-    # No numeric part found — append .1
     return version + ".1"
 
 
@@ -476,7 +591,6 @@ def _extract_last_user_text(messages: List[Message]) -> str:
         if msg.role == "user":
             if isinstance(msg.content, str):
                 return msg.content
-            # Multimodal: collect text parts
             texts = [
                 p.text for p in msg.content if hasattr(p, "text")
             ]
