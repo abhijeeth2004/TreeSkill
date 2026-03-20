@@ -23,7 +23,6 @@ from __future__ import annotations
 import json
 import logging
 import random
-import time
 from typing import Dict, List, Optional, TYPE_CHECKING
 
 from rich.progress import (
@@ -502,17 +501,46 @@ class APOEngine:
         If *auto_split* is ``True``, the engine will analyse each node
         for potential splits and apply them automatically.
 
+        Traces are routed to the correct node via ``Trace.node_path``.
+        Traces with ``node_path=None`` (legacy) are used by all nodes.
+
         Returns the mutated tree (same object).
         """
-        self._evolve_node(
-            tree.root,
-            traces,
-            tree=tree,
-            auto_split=auto_split,
-            resume=resume,
-            on_node_done=on_node_done,
-            _path_prefix="",
-        )
+        total = _count_nodes(tree.root)
+        skipped = 0
+        if resume:
+            skipped = sum(
+                1 for _ in _iter_dotpaths(tree.root, "")
+                if resume.is_node_done(_)
+            )
+
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[bold blue]{task.fields[node]}"),
+            BarColumn(bar_width=30),
+            MofNCompleteColumn(),
+            TimeElapsedColumn(),
+            TextColumn("ETA"),
+            TimeRemainingColumn(),
+            transient=False,
+        ) as progress:
+            task_id = progress.add_task(
+                "Evolving",
+                total=total,
+                completed=skipped,
+                node="starting …",
+            )
+            self._evolve_node(
+                tree.root,
+                traces,
+                tree=tree,
+                auto_split=auto_split,
+                resume=resume,
+                on_node_done=on_node_done,
+                _path_prefix="",
+                _progress=progress,
+                _task_id=task_id,
+            )
         return tree
 
     def _evolve_node(
@@ -524,6 +552,8 @@ class APOEngine:
         resume: Optional[ResumeState] = None,
         on_node_done: Optional[callable] = None,
         _path_prefix: str = "",
+        _progress: Optional[Progress] = None,
+        _task_id: Optional[int] = None,
     ) -> None:
         """Recursively optimise a single node and its children.
 
@@ -547,20 +577,35 @@ class APOEngine:
                 resume=resume,
                 on_node_done=on_node_done,
                 _path_prefix=dotpath,
+                _progress=_progress,
+                _task_id=_task_id,
             )
+
+        # Update progress bar description
+        if _progress is not None and _task_id is not None:
+            _progress.update(_task_id, node=dotpath)
 
         # Skip if already done in a previous (interrupted) run
         if resume and resume.is_node_done(dotpath):
             logger.info("Skipping already-optimised node: %s", dotpath)
+            if _progress is not None and _task_id is not None:
+                _progress.update(_task_id, advance=1, node=f"{dotpath} (cached)")
             return
 
-        # Step 2: Optimise this node's skill
-        diagnosed = [t for t in traces if t.feedback is not None]
+        # Step 2: Route traces — only use traces belonging to this node
+        node_traces = _filter_traces_for_node(traces, dotpath)
+        diagnosed = [t for t in node_traces if t.feedback is not None]
         if not diagnosed:
             if resume:
                 resume.mark_node_done(dotpath)
+            if _progress is not None and _task_id is not None:
+                _progress.update(_task_id, advance=1, node=f"{dotpath} (no traces)")
             return
 
+        logger.info(
+            "Optimising '%s' with %d/%d traces (node-specific/total)",
+            dotpath, len(diagnosed), len([t for t in traces if t.feedback]),
+        )
         node.skill = self.optimize(node.skill, diagnosed)
 
         # Step 3: Auto-split (only for LEAF nodes to avoid overwriting children)
@@ -597,6 +642,9 @@ class APOEngine:
                     )
                     if resume:
                         resume.mark_node_split(dotpath, child_names)
+                    # Grow the progress bar to account for new nodes
+                    if _progress is not None and _task_id is not None:
+                        _progress.update(_task_id, total=(_progress.tasks[_task_id].total or 0) + len(child_names))
 
         # Step 4: Optimise newly created children
         for child_node in new_children:
@@ -607,6 +655,8 @@ class APOEngine:
                 resume=resume,
                 on_node_done=on_node_done,
                 _path_prefix=dotpath,
+                _progress=_progress,
+                _task_id=_task_id,
             )
 
         # Step 5: Checkpoint
@@ -614,6 +664,9 @@ class APOEngine:
             tree.save()
             resume.mark_node_done(dotpath)
             logger.info("Progress saved after node: %s", dotpath)
+
+        if _progress is not None and _task_id is not None:
+            _progress.update(_task_id, advance=1, node=f"{dotpath} ✓")
 
         if on_node_done:
             on_node_done(dotpath, node)
@@ -655,3 +708,38 @@ def _extract_last_user_text(messages: List[Message]) -> str:
             ]
             return " ".join(texts) if texts else "[image-only input]"
     return "[no user message]"
+
+
+def _count_nodes(node: "SkillNode") -> int:
+    """Count total nodes in the subtree (including *node* itself)."""
+    return 1 + sum(_count_nodes(c) for c in node.children.values())
+
+
+def _iter_dotpaths(node: "SkillNode", prefix: str):
+    """Yield all dotpaths in the subtree (DFS, children-first like evolve)."""
+    dotpath = f"{prefix}.{node.name}" if prefix else node.name
+    for child in node.children.values():
+        yield from _iter_dotpaths(child, dotpath)
+    yield dotpath
+
+
+def _filter_traces_for_node(traces: List[Trace], dotpath: str) -> List[Trace]:
+    """Return traces that belong to *dotpath*.
+
+    Routing rules:
+    - ``trace.node_path == dotpath`` → exact match, always included.
+    - ``trace.node_path`` starts with ``dotpath + "."`` → child trace,
+      included for the parent so it can see its subtree's feedback.
+    - ``trace.node_path is None`` → legacy trace (no routing info),
+      included for ALL nodes to preserve backward compatibility.
+    """
+    result: List[Trace] = []
+    prefix = dotpath + "."
+    for t in traces:
+        if t.node_path is None:
+            # Legacy trace — no routing info, use everywhere
+            result.append(t)
+        elif t.node_path == dotpath or t.node_path.startswith(prefix):
+            # Exact match or descendant
+            result.append(t)
+    return result

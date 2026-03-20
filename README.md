@@ -183,7 +183,7 @@ evoskill/
 │   └── validators.py      # 验证器
 ├── adapters/              # 模型适配器
 │   ├── openai.py          # OpenAI / 兼容 API
-│   └── anthropic.py       # Anthropic Claude
+│   └── anthropic.py       # Anthropic Claude 4.5/4.6
 ├── schema.py              # 数据模型 (Skill, Message, Trace)
 ├── skill.py               # SKILL.md 解析器/写入器
 ├── skill_tree.py          # 层级 Skill 树管理
@@ -225,5 +225,12 @@ evoskill/
 | [核心抽象](./docs/CORE_ABSTRACTION.md) | Prompt、Gradient、Experience 接口 |
 | [工具系统](./docs/TOOLS_GUIDE.md) | Python、HTTP、MCP 工具注册 |
 | [OpenAI 适配器](./docs/OPENAI_ADAPTER.md) | GPT-4o、o1 等 |
-| [Anthropic 适配器](./docs/ANTHROPIC_ADAPTER.md) | Claude 3.5 系列 |
+| [Anthropic 适配器](./docs/ANTHROPIC_ADAPTER.md) | Claude 4.5/4.6 系列 |
+| [跨模型 Skill 迁移](./docs/design/cross-model-transfer.md) | 双模型 TGD：大模型优化，小模型执行 |
 | [优化器详解](./docs/OPTIMIZER_COMPLETE.md) | TrainFreeOptimizer 技术文档 |
+| [树优化 Demo](./docs/TREE_OPTIMIZATION_DEMO.md) | 10 分钟最小化树优化最佳实践（论文分类） |
+
+## 致谢
+
+- APO 优化引擎受 [Microsoft Agent-Lightning](https://github.com/microsoft/agent-lightning/) 启发，感谢他们的开源贡献。
+- 论文分类数据集来自 [书生实战营 InternLM Tutorial](https://github.com/InternLM/Tutorial)。

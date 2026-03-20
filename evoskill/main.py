@@ -194,20 +194,16 @@ def main(argv: list[str] | None = None) -> None:
                 metadata={"trace_count": len(traces)},
             )
 
+        tagged = sum(1 for t in traces if t.node_path is not None)
         console.print(
-            f"[bold]Running APO[/bold] on {len(traces)} feedback traces …"
+            f"[bold]Running APO[/bold] on {len(traces)} feedback traces "
+            f"({tagged} node-routed, {len(traces) - tagged} global) …"
         )
-
-        def _on_node_done(dotpath: str, node) -> None:
-            console.print(
-                f"  [green]✓[/green] {dotpath} → {node.skill.version}"
-            )
 
         try:
             engine.evolve_tree(
                 skill_tree, traces,
                 resume=resume,
-                on_node_done=_on_node_done,
             )
             skill_tree.save()
             resume.clear()  # all done — remove resume file
