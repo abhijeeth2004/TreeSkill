@@ -82,7 +82,7 @@ Prunes performed: 0  🎉
 
 **生成的树结构**:
 ```
-demo-qwen3-8b-tree/round1/
+demo/outputs/demo-qwen3-8b-tree/round1/
 ├── root.yaml
 ├── astronomy/
 │   ├── _meta.yaml
@@ -315,7 +315,7 @@ config = TreeOptimizerConfig(
 - `demo/PROGRESSIVE_PRUNING.md` - 渐进式剪枝完整功能说明
 - `demo/BUGFIX_SUMMARY.md` - Bug修复和功能实现总结
 - `demo/demo_qwen3_8b_tree.py` - 验证Demo脚本
-- `demo-qwen3-8b-tree/` - 验证输出目录
+- `demo/outputs/demo-qwen3-8b-tree/` - 验证输出目录
 
 ---
 

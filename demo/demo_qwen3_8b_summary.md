@@ -300,7 +300,7 @@ demo/
 └── data/
     └── intern_camp5.csv          # 数据集（100条）
 
-demo-qwen3-8b/                    # 本Demo输出（单一skill）
+demo/outputs/demo-qwen3-8b/                    # 本Demo输出（单一skill）
 ├── root.yaml                     # 优化后的skill (v1.1)
 └── _meta.yaml                    # 元数据
 

@@ -73,7 +73,7 @@ auto_prune=False
 相对提升: +71.4%
 ```
 
-**输出**: `demo-qwen3-8b/root.yaml` (v1.1)
+**输出**: `demo/outputs/demo-qwen3-8b/root.yaml` (v1.1)
 
 ---
 

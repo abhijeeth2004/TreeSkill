@@ -25,8 +25,8 @@ pip install openai tiktoken
 ### 2. 基本使用
 
 ```python
-from evo_framework.core import TextPrompt
-from evo_framework.adapters.openai import OpenAIAdapter
+from evoskill.core import TextPrompt
+from evoskill.adapters.openai import OpenAIAdapter
 
 # 创建适配器
 adapter = OpenAIAdapter(
@@ -48,7 +48,7 @@ print(response)
 ### 3. 使用对话上下文
 
 ```python
-from evo_framework.core import ConversationExperience
+from evoskill.core import ConversationExperience
 
 # 创建对话历史
 experiences = [
@@ -65,7 +65,7 @@ response = adapter.generate(prompt, context=experiences)
 ### 4. Prompt优化
 
 ```python
-from evo_framework.core import CompositeFeedback
+from evoskill.core import CompositeFeedback
 
 # 创建失败经验
 bad_experience = ConversationExperience(
@@ -152,7 +152,7 @@ total_tokens = adapter.count_messages_tokens(messages)
 ### 2. Prompt验证
 
 ```python
-from evo_framework.core import MultimodalPrompt
+from evoskill.core import MultimodalPrompt
 
 # 多模态Prompt
 mm_prompt = MultimodalPrompt(
@@ -199,7 +199,7 @@ response = adapter.generate(
 ### SiliconFlow API 测试 ✅
 
 ```bash
-$ python test_openai_siliconflow.py
+$ python tests/test_openai_siliconflow.py
 
 Test 1: Basic Generation
 ✓ Response: 好的，我会尽力简洁地回答您的问题...
@@ -310,7 +310,7 @@ adapter = OpenAIAdapter(
 ### Q: 如何处理vision任务？
 
 ```python
-from evo_framework.core import MultimodalPrompt
+from evoskill.core import MultimodalPrompt
 
 # 创建多模态prompt
 prompt = MultimodalPrompt(
@@ -372,8 +372,8 @@ response = adapter.generate(prompt, max_tokens=100)
 ## 示例代码
 
 完整的示例代码请参考：
-- `test_openai_adapter.py` - 基础测试（不需要API）
-- `test_openai_siliconflow.py` - 完整测试（使用SiliconFlow API）
+- `tests/test_openai_adapter.py` - 基础测试（不需要API）
+- `tests/test_openai_siliconflow.py` - 完整测试（使用SiliconFlow API）
 - `examples/mock_adapter.py` - Mock adapter示例
 
 ---

@@ -326,13 +326,13 @@ python demo/demo_qwen3_8b_tree.py
 
 ```bash
 # 查看日志中的保护信息
-grep "🛡️ Protecting" demo-qwen3-8b-tree/*.log
+grep "🛡️ Protecting" demo/outputs/demo-qwen3-8b-tree/*.log
 
 # 查看最终树结构
-cat demo-qwen3-8b-tree/TREE_VISUALIZATION.txt
+cat demo/outputs/demo-qwen3-8b-tree/TREE_VISUALIZATION.txt
 
 # 统计节点数
-grep "子skill数" demo-qwen3-8b-tree/*.log
+grep "子skill数" demo/outputs/demo-qwen3-8b-tree/*.log
 ```
 
 ---

@@ -16,12 +16,15 @@ import csv
 import logging
 import random
 import os
+import sys
 from pathlib import Path
 from typing import List, Dict
 from collections import Counter
 from dotenv import load_dotenv
 
 load_dotenv()
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from evoskill import (
     OpenAIAdapter,
@@ -224,7 +227,7 @@ def main():
 
     tree = SkillTree(
         root=SkillNode(name="root", skill=root_skill),
-        base_path=Path("demo-qwen3-8b/"),
+        base_path=Path("demo/outputs/demo-qwen3-8b/"),
     )
 
     logger.info(f"\n⚠️  使用很差的初始prompt")
@@ -302,7 +305,7 @@ def main():
     logger.info(f"   相对提升: {relative_improvement:+.1f}%")
 
     # 保存
-    output_path = Path("demo-qwen3-8b/")
+    output_path = Path("demo/outputs/demo-qwen3-8b/")
     best_tree.save(output_path)
     logger.info(f"\n💾 已保存到: {output_path}")
 

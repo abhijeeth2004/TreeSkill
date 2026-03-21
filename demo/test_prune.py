@@ -7,9 +7,12 @@
 
 import logging
 import os
+import sys
 from pathlib import Path
 
 from dotenv import load_dotenv
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from evoskill import (
     OpenAIAdapter,
@@ -135,7 +138,7 @@ def main():
         meta=SkillMeta(name="paper-classifier", description="Paper classifier"),
     )
 
-    output_path = Path("demo-qwen3-8b-tree-pruned/")
+    output_path = Path("demo/outputs/demo-qwen3-8b-tree-pruned/")
     tree = SkillTree(
         root=SkillNode(name="root", skill=root_skill),
         base_path=output_path,

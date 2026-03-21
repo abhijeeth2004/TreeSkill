@@ -3,10 +3,10 @@
 ## 概述
 
 `AnthropicAdapter` 是用于Anthropic Claude API的适配器实现，支持：
-- ✅ 所有Claude 3.5系列模型（Sonnet、Haiku）
-- ✅ 所有Claude 3系列模型（Opus、Sonnet、Haiku）
-- ✅ Vision支持（所有Claude 3+模型）
-- ✅ 200K超长上下文
+- ✅ Claude 4.5 系列模型（Opus、Sonnet、Haiku）
+- ✅ Claude 3.5 / 3 系列模型（向下兼容）
+- ✅ Vision 支持（所有 Claude 3+ 模型）
+- ✅ 最大 1M 上下文（Claude 4.5 Opus）
 - ✅ 独特的system prompt处理
 - ✅ TGD梯度计算和应用
 
@@ -30,8 +30,8 @@ export ANTHROPIC_API_KEY='your-api-key-here'
 ### 3. 基本使用
 
 ```python
-from evo_framework.core import TextPrompt
-from evo_framework.adapters.anthropic import AnthropicAdapter
+from evoskill.core import TextPrompt
+from evoskill.adapters.anthropic import AnthropicAdapter
 
 # 创建适配器
 adapter = AnthropicAdapter(model="claude-3-5-sonnet-20241022")
@@ -118,7 +118,7 @@ else:
 ### 3. Vision支持
 
 ```python
-from evo_framework.core import MultimodalPrompt
+from evoskill.core import MultimodalPrompt
 
 # 创建多模态Prompt
 prompt = MultimodalPrompt(
@@ -139,7 +139,7 @@ response = adapter.generate(prompt)
 ### 4. 对话上下文
 
 ```python
-from evo_framework.core import ConversationExperience
+from evoskill.core import ConversationExperience
 
 # 创建对话历史
 experiences = [
@@ -162,7 +162,7 @@ response = adapter.generate(prompt, context=experiences)
 ### 5. Prompt优化
 
 ```python
-from evo_framework.core import CompositeFeedback
+from evoskill.core import CompositeFeedback
 
 # 创建失败经验
 bad_exp = ConversationExperience(
@@ -190,7 +190,7 @@ print(f"优化后: {new_prompt.version}")  # v1.0 → v1.1
 ### 1. 工厂函数
 
 ```python
-from evo_framework.adapters.anthropic import (
+from evoskill.adapters.anthropic import (
     create_claude_35_sonnet,
     create_claude_35_haiku,
     create_claude_3_opus,
@@ -253,7 +253,7 @@ except APIError as e:
 ### 基础功能测试 ✅
 
 ```bash
-$ python test_anthropic_adapter.py
+$ python tests/test_anthropic_adapter.py
 
 Test 4: Token Counting
 ✓ Text token counting
@@ -429,8 +429,8 @@ actual_tokens = response.usage.input_tokens
 ### 完整示例：多轮对话
 
 ```python
-from evo_framework.core import TextPrompt, ConversationExperience
-from evo_framework.adapters.anthropic import create_claude_35_sonnet
+from evoskill.core import TextPrompt, ConversationExperience
+from evoskill.adapters.anthropic import create_claude_35_sonnet
 
 # 创建适配器
 adapter = create_claude_35_sonnet()

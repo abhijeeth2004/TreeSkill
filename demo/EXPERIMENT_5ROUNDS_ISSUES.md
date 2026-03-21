@@ -183,7 +183,7 @@ Round 4: temp=0.50  # 过于随机
 ### 8. Checkpoint目录过大
 
 ```bash
-demo-qwen3-8b-tree-5rounds/
+demo/outputs/demo-qwen3-8b-tree-5rounds/
 ├── round1/  # 6个节点目录
 ├── round2/  # ~50个节点目录
 └── round3/  # 169个节点目录 ❌

@@ -8,9 +8,11 @@ Commands
 /target <text>  — set a one-line optimization target (e.g. "更像人").
 /save           — force-save the current skill to disk.
 /optimize       — trigger an APO optimization cycle.
+/help           — show available commands and brief descriptions.
 /tree           — show the skill tree hierarchy.
 /select <path>  — switch active skill (e.g. /select social.moments).
 /split          — analyze and split current skill into sub-skills.
+/tools          — list built-in tools available to the model.
 /ckpt           — list available checkpoints.
 /restore <name> — restore from a checkpoint.
 /quit           — exit the chat loop.
@@ -29,11 +31,13 @@ from rich.panel import Panel
 from rich.prompt import Prompt
 from rich.theme import Theme
 
+from evoskill.builtin_tools import build_builtin_tools
 from evoskill import skill as skill_module
 from evoskill.checkpoint import CheckpointManager
 from evoskill.config import GlobalConfig
 from evoskill.llm import LLMClient
 from evoskill.optimizer import APOEngine
+from evoskill.resume import ResumeState
 from evoskill.schema import (
     ContentPart,
     Feedback,
@@ -55,6 +59,24 @@ _THEME = Theme(
         "error": "bold red",
     }
 )
+
+_COMMAND_SPECS = [
+    ("/", "", "显示所有命令和简要说明"),
+    ("/help", "", "显示所有命令和简要说明"),
+    ("/image", "<path>", "给下一条消息附加本地图片"),
+    ("/bad", "<reason>", "给上一轮回答打差评并记录原因"),
+    ("/rewrite", "<ideal response>", "给上一轮回答提供理想改写"),
+    ("/target", "<text>", "设置长期优化方向"),
+    ("/save", "", "立即保存当前 skill"),
+    ("/optimize", "", "基于已记录反馈优化当前 skill"),
+    ("/tools", "", "查看模型可用的内置工具"),
+    ("/tree", "", "查看当前 skill 树"),
+    ("/select", "<path>", "切换到 skill 树中的某个节点"),
+    ("/split", "", "分析当前 skill 是否适合拆分"),
+    ("/ckpt", "", "查看可用 checkpoint"),
+    ("/restore", "<name>", "从 checkpoint 恢复"),
+    ("/quit", "", "退出 CLI"),
+]
 
 
 class ChatCLI:
@@ -87,6 +109,7 @@ class ChatCLI:
         self._storage = TraceStorage(config.storage)
         self._optimizer = APOEngine(config, self._llm)
         self._ckpt = CheckpointManager(ckpt_dir)
+        self._builtin_tools = build_builtin_tools()
 
         self._history: List[Message] = []
         self._last_trace: Optional[Trace] = None
@@ -103,8 +126,9 @@ class ChatCLI:
                 f"[bold]Evo-Framework Chat[/bold]\n"
                 f"Skill: [cyan]{self._skill.name}[/cyan] "
                 f"({self._skill.version})\n"
-                f"Model: [cyan]{self._config.llm.model}[/cyan]\n\n"
-                f"[dim]Commands: /image, /bad, /rewrite, /target, /save, /optimize, /tree, /select, /split, /ckpt, /restore, /quit[/dim]",
+                f"Model: [cyan]{self._config.llm.model}[/cyan]\n"
+                f"Built-in tools: [cyan]{', '.join(sorted(self._builtin_tools))}[/cyan]\n\n"
+                f"[dim]输入 / 或 /help 查看命令说明[/dim]",
                 title="🧬 Evo",
                 border_style="bright_blue",
             )
@@ -112,7 +136,7 @@ class ChatCLI:
 
         while True:
             try:
-                raw = Prompt.ask("\n[bold green]You[/bold green]")
+                raw = Prompt.ask("\n[bold green]You[/bold green] [dim](/ 查看命令)[/dim]")
             except (EOFError, KeyboardInterrupt):
                 self._console.print("\n[info]Goodbye![/info]")
                 break
@@ -136,8 +160,13 @@ class ChatCLI:
             full_messages = skill_module.compile_messages(
                 self._skill, self._history
             )
+            full_messages.insert(1, self._tool_guidance_message())
             with self._console.status("[dim]Thinking…[/dim]"):
-                response = self._llm.generate(full_messages)
+                response = self._llm.generate(
+                    full_messages,
+                    tools=self._builtin_tools,
+                    on_tool_event=self._on_tool_event,
+                )
             self._history.append(response)
 
             # --- trace ---
@@ -168,6 +197,8 @@ class ChatCLI:
         cmd = parts[0].lower()
         arg = parts[1] if len(parts) > 1 else ""
 
+        if cmd in {"/", "/help"}:
+            return self._cmd_help(arg)
         if cmd == "/quit":
             raise KeyboardInterrupt
 
@@ -181,6 +212,8 @@ class ChatCLI:
             return self._cmd_save()
         if cmd == "/optimize":
             return self._cmd_optimize()
+        if cmd == "/tools":
+            return self._cmd_tools()
         if cmd == "/target":
             return self._cmd_target(arg)
         if cmd == "/tree":
@@ -195,6 +228,7 @@ class ChatCLI:
             return self._cmd_restore(arg)
 
         self._console.print(f"[error]Unknown command:[/error] {cmd}")
+        self._show_command_help(prefix=cmd)
         return True  # consumed
 
     def _cmd_image(self, path_str: str) -> bool:
@@ -239,10 +273,17 @@ class ChatCLI:
         return True
 
     def _cmd_save(self) -> bool:
-        skill_module.save(self._skill, self._skill_path)
+        if self._skill_tree:
+            self._skill_tree.save()
+        else:
+            skill_module.save(self._skill, self._skill_path)
         self._console.print(
-            f"[success]Skill saved →[/success] {self._skill_path}"
+            f"[success]Skill saved →[/success] {self._skill_path}/SKILL.md"
         )
+        return True
+
+    def _cmd_help(self, text: str) -> bool:
+        self._show_command_help(prefix=text.strip() if text else None)
         return True
 
     def _cmd_optimize(self) -> bool:
@@ -250,17 +291,57 @@ class ChatCLI:
         if not traces:
             self._console.print("[warning]No feedback samples to optimize on.[/warning]")
             return True
-        with self._console.status("[dim]Running APO optimization…[/dim]"):
+
+        # Check for resume state
+        resume = ResumeState.load(self._skill_path)
+        if resume:
+            self._console.print(f"[yellow]⚠ 发现未完成的优化[/yellow]")
+            self._console.print(resume.summary())
+            choice = Prompt.ask("继续 (resume) 还是重新开始 (restart)?",
+                                choices=["resume", "restart"], default="resume")
+            if choice == "restart":
+                resume.clear()
+                resume = None
+
+        if resume is None:
+            resume = ResumeState.create(
+                skill_dir=self._skill_path,
+                metadata={"trace_count": len(traces)},
+            )
+
+        def _on_node_done(dotpath: str, node) -> None:
+            self._console.print(
+                f"  [success]✓[/success] {dotpath} → {node.skill.version}"
+            )
+
+        try:
             if self._skill_tree:
-                self._optimizer.evolve_tree(self._skill_tree, traces)
+                self._optimizer.evolve_tree(
+                    self._skill_tree, traces,
+                    resume=resume,
+                    on_node_done=_on_node_done,
+                )
                 self._skill = self._skill_tree.root.skill
                 self._skill_tree.save()
             else:
                 self._skill = self._optimizer.optimize(self._skill, traces)
                 skill_module.save(self._skill, self._skill_path)
+            resume.clear()  # success — remove resume file
+        except KeyboardInterrupt:
+            self._console.print(
+                "\n[warning]⚠ 优化被中断，进度已保存。再次 /optimize 可从断点继续。[/warning]"
+            )
+            return True
+        except Exception as e:
+            self._console.print(
+                f"\n[error]✗ 优化出错: {e}[/error]\n"
+                f"[dim]进度已保存，再次 /optimize 可从断点继续。[/dim]"
+            )
+            return True
+
         # Auto-save checkpoint
         self._ckpt.save(
-            self._skill_path if self._skill_tree else self._skill,
+            self._skill_path,
             trace_path=Path(self._config.storage.trace_path),
         )
         self._console.print(
@@ -279,9 +360,23 @@ class ChatCLI:
                 self._console.print("[warning]尚未设置优化方向。用法: /target <方向>[/warning]")
             return True
         self._skill = self._skill.model_copy(update={"target": text})
-        skill_module.save(self._skill, self._skill_path)
+        if self._skill_tree:
+            self._skill_tree.root.skill = self._skill
+            self._skill_tree.save()
+        else:
+            skill_module.save(self._skill, self._skill_path)
         self._console.print(
             f"[success]优化方向已设置:[/success] {text}"
+        )
+        return True
+
+    def _cmd_tools(self) -> bool:
+        lines = []
+        for name in sorted(self._builtin_tools):
+            tool = self._builtin_tools[name]
+            lines.append(f"- {name}: {tool.description}")
+        self._console.print(
+            Panel("\n".join(lines), title="🛠️ Built-in Tools", border_style="yellow")
         )
         return True
 
@@ -390,6 +485,59 @@ class ChatCLI:
         parts.append(TextContent(text=text))
         self._pending_images.clear()
         return Message(role="user", content=parts)
+
+    def _tool_guidance_message(self) -> Message:
+        return Message(
+            role="system",
+            content=(
+                "You have built-in local tools: list_dir, read_file, search_repo, write_file, shell. "
+                "For repository or filesystem questions, inspect the real files before answering. "
+                "Prefer list_dir/read_file/search_repo over shell when possible. "
+                "Only use write_file or destructive shell commands when the user explicitly asks for file changes."
+            ),
+        )
+
+    def _on_tool_event(self, event: str, payload: dict) -> None:
+        if event == "start":
+            self._console.print(
+                f"[info]tool → {payload.get('name')}[/info] {payload.get('arguments', '')}"
+            )
+            return
+        if event == "finish":
+            result = str(payload.get("result", ""))
+            preview = result.splitlines()[0] if result else ""
+            self._console.print(
+                f"[success]tool ✓ {payload.get('name')}[/success] {preview}"
+            )
+
+    def _show_command_help(self, prefix: Optional[str] = None) -> None:
+        prefix = prefix or ""
+        if prefix and not prefix.startswith("/"):
+            prefix = f"/{prefix}"
+
+        matches = []
+        for command, usage, description in _COMMAND_SPECS:
+            if prefix and command not in {"/", "/help"} and not command.startswith(prefix):
+                continue
+            label = f"{command} {usage}".rstrip()
+            matches.append(f"{label:<28} {description}")
+
+        if prefix and not matches:
+            self._console.print(
+                f"[warning]没有匹配到命令:[/warning] {prefix}\n[dim]输入 / 或 /help 查看完整命令列表[/dim]"
+            )
+            return
+
+        title = "⌨️ Commands"
+        if prefix:
+            title = f"⌨️ Commands matching {prefix}"
+        self._console.print(
+            Panel(
+                "\n".join(matches),
+                title=title,
+                border_style="cyan",
+            )
+        )
 
 
 # ---------------------------------------------------------------------------

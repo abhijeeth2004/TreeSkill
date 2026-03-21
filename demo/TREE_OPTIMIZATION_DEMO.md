@@ -27,8 +27,8 @@
 python demo/demo_qwen3_8b_tree.py
 
 # 查看结果
-ls demo-qwen3-8b-tree/
-cat demo-qwen3-8b-tree/root.yaml
+ls demo/outputs/demo-qwen3-8b-tree/
+cat demo/outputs/demo-qwen3-8b-tree/root.yaml
 ```
 
 **预期结果**:

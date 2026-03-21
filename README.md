@@ -1,582 +1,314 @@
-# 🧬 Evo-Framework
+# EvoSkill
 
-**多模态、自进化的 Agent Prompt 优化框架**
+**Train-Free Agent Prompt 自进化框架**
 
-把 System Prompt 当作"权重"，把交互历史当作"数据集"，通过 **APO（自动提示优化）** 循环，让你的 Agent 越用越好。
+把 System Prompt 当作"权重"，把交互反馈当作"训练信号"，通过文本梯度下降（TGD）让 prompt 自动进化——免训练，免标注，只靠 API 调用。
 
----
+```
+用户反馈 → 诊断失败 → 计算文本梯度 → Beam Search 重写 → 更好的 Agent
+```
 
 ## 核心理念
 
-```
-用户反馈 → 诊断失败原因 → 计算"文本梯度" → 重写 System Prompt → 更好的 Agent
-```
+EvoSkill 将 LLM prompt 优化类比为深度学习的训练循环，但**完全不需要训练模型**：
 
-不需要训练模型、不需要标注数据——只需要在日常对话中告诉 Agent 哪里做得不好，框架会自动把 prompt 进化到更好的版本。
+| 深度学习 | EvoSkill |
+|----------|----------|
+| 模型权重 | System Prompt |
+| 训练数据 | 交互反馈（人工 or LLM Judge） |
+| 损失函数 | 失败案例分析 |
+| 梯度 | 文本梯度（自然语言的失败归因） |
+| 参数更新 | Prompt 重写（Beam Search 多候选） |
+| Epoch | 优化轮次（支持断点续跑） |
+
+## 特性
+
+- **免训练 (Train-Free)** — 纯 API 调用，无需 GPU、无需微调、无需标注数据
+- **Human-in-the-Loop** — 人工反馈驱动优化：`/bad` 标记失败、`/rewrite` 提供理想回答、`/target` 设置优化方向，让领域专家直接参与 prompt 进化
+- **Beam Search APO** — 对齐 [Agent-Lightning](https://github.com/microsoft/agent-lightning/) 的优化算法：多模板梯度分析 × 多候选生成 × Beam Search 选择，持续保留 top-k prompt 跨轮优化
+- **模型无关** — 支持 OpenAI、Anthropic、任何 OpenAI 兼容 API（硅基流动、Ollama 等）
+- **Agent Skills 标准** — Skill 文件遵循 [agentskills.io](https://agentskills.io) 开放标准
+- **层级 Skill 树** — 自动拆分、剪枝、嫁接，递归 bottom-up 优化
+- **多协议工具系统** — Skill 可声明和调用多种格式的外部工具：
+  - **Python 脚本** — `script.py` 中的函数自动注册为工具
+  - **HTTP API** — 声明式调用任意 REST 端点
+  - **MCP 服务器** — 兼容 [Model Context Protocol](https://modelcontextprotocol.io/) 的工具调用
+- **断点续跑** — 优化中断后从上次进度恢复，不浪费已完成的 API 调用
 
 ## 安装
 
 ```bash
-conda activate pr
 cd /path/to/evo_agent
 pip install -e .
 ```
 
 ## 快速开始
 
-### 1. 配置
-
-**方式 A：用 YAML 配置文件（推荐）**
+### 1. 配置 API
 
 ```bash
-# 复制模版并填入你的 API Key
 cp demo/example/config.yaml my-config.yaml
-# 编辑 my-config.yaml（所有字段都有中文注释）
+# 编辑 my-config.yaml，填入 API Key
 ```
 
-**方式 B：用 .env 文件**
+或用环境变量：
 
 ```env
 EVO_LLM_API_KEY=your-api-key
 EVO_LLM_BASE_URL=https://api.siliconflow.cn/v1
 EVO_LLM_MODEL=Qwen/Qwen2.5-14B-Instruct
-EVO_LLM_JUDGE_MODEL=Qwen/Qwen2.5-14B-Instruct
 ```
 
-> 完整参数模版见 `demo/example/config.yaml`，完整 Skill 模版见 `demo/example/skill.yaml`
-
-### 2. 启动聊天
+### 2. 启动
 
 ```bash
-# 用 config 文件 + skill 启动（推荐）
-python -m evo_framework.main --config my-config.yaml --skill demo/writing-skills.yaml
+# 用已有 skill 目录
+python -m evoskill.main --config my-config.yaml --skill skills/fast-test-skill
 
-# 用默认 skill（首次自动创建）
-python -m evo_framework.main --skill default
+# 用默认 skill（自动创建）
+python -m evoskill.main --skill default
 
-# 用已有的 skill 文件（只用 .env 配置）
-python -m evo_framework.main --skill demo/writing-skills.yaml
-
-# 用 skill 树目录（层级技能包）
-python -m evo_framework.main --skill demo/my-writing-tree/
+# 用 skill 树目录
+python -m evoskill.main --skill my-skills/
 ```
 
-### 3. 在聊天中优化
+### 3. Human-in-the-Loop 优化
+
+EvoSkill 的核心交互模式是**人机协作优化**：领域专家通过自然语言反馈，引导 APO 引擎改进 prompt。
 
 ```
 You: 帮我写一段关于春天的短文
 
 🤖 Assistant: [生成结果]
 
-You: /bad 太像AI写的，缺乏生活气息       ← 标记"不好" + 原因
-You: /rewrite 春天来了，小区的玉兰花...    ← 提供理想回答
-You: /target 更像人，有生活气息            ← 设置全局优化方向
-You: /optimize                            ← 一键 APO 优化！
+You: /bad 太像AI写的，缺乏生活气息       ← 标记失败 + 原因
+You: /rewrite 春天来了，小区的玉兰花...    ← 提供理想回答（可选）
+You: /target 更像人，有生活气息            ← 设置优化方向（可选）
+You: /optimize                            ← 触发 APO 优化
 
 ✓ Skill optimized → writing-assistant (v1.0 → v1.1) (checkpoint saved)
 ```
 
-### 4. 运行 Demo（交互式）
+每次 `/bad` 和 `/rewrite` 生成一条 Trace（带反馈的交互记录），`/optimize` 时 APO 引擎从这些 Trace 中提取失败模式，计算文本梯度，重写 prompt。**领域专家不需要懂 prompt engineering，只需要判断回答好不好。**
 
-```bash
-python demo/demo_from_scratch.py    # 从零构建 skill 并进化
-python demo/demo_from_skill.py      # 从已有 skill 开始优化
+也支持全自动模式：用测试集 + LLM Judge 自动评分，循环优化直到达标。
+
+## Skill 文件格式
+
+遵循 [Agent Skills 标准](https://agentskills.io/specification)，每个 Skill 是一个目录：
+
+```
+my-skill/
+├── SKILL.md          # YAML frontmatter + Markdown body（= system prompt）
+├── config.yaml       # 可选：few-shot、temperature、工具声明、日程等
+└── script.py         # 可选：Python 工具函数
 ```
 
-两个 demo 都是交互式的——你可以在每个步骤中修改输入、自定义反馈、设置优化方向。
+**SKILL.md 示例：**
 
-## 完整示例
+```markdown
+---
+name: my-writing-assistant
+description: 专业中文写作助手，帮助撰写和润色各类文本。
+metadata:
+  version: "1.0"
+  target: "更像真人说话，有温度"
+---
 
-### 示例 1: 基础优化（交互式）
-
-```bash
-python example_optimizer.py
+你是一位专业的中文写作助手。
+语言要自然流畅，避免 AI 腔。
 ```
 
-展示如何使用 TrainFreeOptimizer：
-- 创建初始 Prompt
-- 收集失败案例
-- 计算文本梯度
-- 应用梯度更新
-- 验证优化结果
+> 详见 [docs/design/skill-format.md](./docs/design/skill-format.md)
 
-### 示例 2: 工具注册
+## 工具系统
 
-```bash
-python example_tools.py
+Skill 可以声明外部工具，agent 在对话中按需调用。支持三种协议：
+
+**config.yaml 声明示例：**
+
+```yaml
+tools:
+  # HTTP API 工具
+  - name: weather
+    type: http
+    endpoint: https://api.weather.com/current
+    method: GET
+    description: 获取当前天气
+
+  # MCP 工具
+  - name: database
+    type: mcp
+    mcp_server: localhost:5000
+    tool_name: query
+    description: 查询数据库
 ```
 
-展示如何注册和使用工具：
-- Python 函数工具
-- HTTP API 工具
-- MCP 工具
-- 工具组合
-
-### 示例 3: 完全自动化优化
-
-```bash
-# 设置 API
-export OPENAI_API_KEY="your-key"
-export OPENAI_BASE_URL="https://api.siliconflow.cn/v1"
-
-# 运行
-python example_fully_automatic.py
-```
-
-展示如何实现完全自动化的优化：
-- 自动生成测试集
-- 自动评估结果
-- 自动计算梯度
-- 自动优化 Prompt
-- **无需人工干预**
-
-**适合生产环境的持续优化**。
-
-**适合生产环境的持续优化**。
-
-### 示例 5: 树感知优化（自动拆分 & 剪枝）
-
-**完整验证报告**: 请查看 [`demo/TREE_OPTIMIZATION_DEMO.md`](./demo/TREE_OPTIMIZATION_DEMO.md) 查看渐进式剪枝的完整验证结果和使用指南。
-
-```bash
-python example_tree_optimization.py
-```
-
-展示如何使用 TreeAwareOptimizer 进行树感知优化：
-- **自动拆分**: 检测到矛盾反馈时自动拆分 skill 为子 skills
-- **自动剪枝**: 根据性能指标自动移除低效子 skill
-- **部分优化**: 支持只修改 prompt 的某一部分（指令、示例、约束）
-- **树感知优化**: 递归优化整棵 skill 树（bottom-up）
-
-**优化流程**:
-
-```mermaid
-graph TD
-    A[加载 Skill 树] --> B[收集 Experiences]
-    B --> C[创建 TreeAwareOptimizer]
-    C --> D[运行树优化]
-
-    D --> E{遍历每个节点<br/>bottom-up}
-    E --> F[单点优化]
-    F --> G{需要拆分?}
-
-    G -->|检测到矛盾反馈| H[自动拆分]
-    H --> I[生成子 Skills]
-    I --> J{需要剪枝?}
-
-    G -->|无需拆分| J
-    J -->|性能低于阈值| K[自动剪枝]
-    J -->|性能良好| L[保留节点]
-
-    K --> M[保存优化后的树]
-    L --> M
-    I --> M
-
-    style A fill:#e1f5ff
-    style B fill:#e1f5ff
-    style F fill:#fff9c4
-    style H fill:#ffcdd2
-    style K fill:#ffcdd2
-    style M fill:#c8e6c9
-```
-
-**核心功能**:
-
-1. **自动拆分分析**
-   ```mermaid
-   graph LR
-       A[分析反馈] --> B{存在矛盾?}
-       B -->|是| C[生成子规格]
-       B -->|否| D[保持现状]
-       C --> E[创建子 Skills]
-   ```
-
-2. **自动剪枝判断**
-   ```mermaid
-   graph TD
-       A[收集性能指标] --> B{性能分数 < 阈值?}
-       B -->|是| C[标记剪枝]
-       B -->|否| D{使用频率极低?}
-       D -->|是| C
-       D -->|否| E{成功率 < 30%?}
-       E -->|是| C
-       E -->|否| F[保留节点]
-   ```
-
-3. **部分优化策略**
-   - `all`: 完整优化（默认）
-   - `instruction`: 只优化指令部分
-   - `examples`: 只优化 few-shot examples
-   - `constraints`: 只优化约束条件
-
-**使用示例**:
+**script.py 自动注册：**
 
 ```python
-from evoskill import (
-    SkillTree,
-    OpenAIAdapter,
-    TreeAwareOptimizer,
-    TreeOptimizerConfig,
-)
-
-# 1. 创建组件
-adapter = OpenAIAdapter(model="gpt-4o-mini")
-config = TreeOptimizerConfig(
-    auto_split=True,      # 启用自动拆分
-    auto_prune=True,      # 启用自动剪枝
-    prune_threshold=0.3,  # 剪枝阈值
-    section="all",        # 优化整个 prompt
-)
-tree_optimizer = TreeAwareOptimizer(
-    adapter=adapter,
-    config=config,
-)
-
-# 2. 加载 skill 树
-tree = SkillTree.load("my-skills/")
-
-# 3. 收集 experiences
-experiences = load_experiences("traces.jsonl")
-
-# 4. 优化树
-result = tree_optimizer.optimize_tree(tree, experiences)
-
-# 5. 查看结果
-print(f"✓ 优化了 {result.nodes_optimized} 个节点")
-print(f"✓ 拆分了 {result.splits_performed} 次")
-print(f"✓ 剪枝了 {result.prunes_performed} 个节点")
-
-# 6. 保存
-result.tree.save("my-skills-optimized/")
+# script.py 中的公开函数自动成为工具
+def search_docs(query: str) -> str:
+    """搜索文档库"""
+    ...
 ```
 
-### 示例 4: 加载已存储的 Skill 和配置
+工具继承：子 Skill 自动继承父 Skill 的工具声明，同名覆盖。
 
-**详细使用指南**: 请查看 [`USAGE_GUIDE.md`](./USAGE_GUIDE.md) 获取完整的配置和 Skill 管理说明。
+> 详见 [docs/TOOLS_GUIDE.md](./docs/TOOLS_GUIDE.md)
 
-```bash
-python example_load_skill_and_config.py
+## Skill 树
+
+Skill 通过目录嵌套形成层级：
+
+```
+writing-skills/
+├── SKILL.md              # 根：通用写作
+├── social/
+│   ├── SKILL.md          # 社交写作
+│   └── moments/
+│       └── SKILL.md      # 朋友圈专精
+└── business/
+    ├── SKILL.md          # 商务写作
+    └── email/
+        └── SKILL.md
 ```
 
-展示如何：
-- 加载配置文件（config.yaml）
-- 加载已存储的 skill 文件
-- 使用适配器调用 LLM
-- 保存优化后的 skill
-- 手动反馈 + 计算梯度
-- 继续优化已存储的 skill
+优化时 bottom-up：先叶子后父节点。反馈矛盾时自动建议拆分。支持 graft（嫁接）跨树复用 skill。
 
-**配置优先级**: 环境变量 > .env 文件 > YAML 配置文件 > 默认值
-
-### 5. 导入验证（不需要网络）
-
-```bash
-cd /path/to/evo_agent
-python -c "
-from evo_framework.schema import Skill, SkillMeta
-from evo_framework.skill_tree import SkillTree, SkillNode
-from evo_framework.checkpoint import CheckpointManager
-from evo_framework.optimizer import APOEngine
-from evo_framework import skill as skill_module
-print('All imports OK')
-
-# 测试 YAML 中文可读性
-sk = Skill(name='test', system_prompt='你好世界')
-skill_module.save(sk, '/tmp/test_skill.yaml')
-print(open('/tmp/test_skill.yaml').read())
-"
-```
+> 详见 [docs/design/tree-optimization.md](./docs/design/tree-optimization.md)
 
 ## 命令一览
 
 | 命令 | 作用 |
 |------|------|
-| `/bad <原因>` | 标记上一条回复为"不好"，附上原因 |
-| `/rewrite <文本>` | 标记上一条回复并提供理想答案 |
-| `/target <方向>` | 设置全局优化方向（如"更像人"、"更简洁"） |
-| `/image <路径>` | 附加本地图片到下一条消息（支持多模态） |
-| `/optimize` | 触发 APO 优化循环 + 自动保存 checkpoint |
-| `/save` | 强制保存当前 skill |
-| `/tree` | 显示技能树层级结构 |
-| `/select <路径>` | 切换活动技能（如 `/select social.moments`） |
-| `/split` | 分析当前技能是否需要拆分为子技能 |
-| `/ckpt` | 列出所有可用 checkpoint |
+| `/bad <原因>` | 标记上条回复不好 |
+| `/rewrite <文本>` | 提供理想回答 |
+| `/target <方向>` | 设置优化方向 |
+| `/optimize` | 触发 APO 优化（支持断点续跑） |
+| `/image <路径>` | 附加图片（多模态） |
+| `/save` | 保存当前 skill |
+| `/tree` | 显示技能树 |
+| `/select <路径>` | 切换子技能（如 `social.moments`） |
+| `/split` | 分析是否需要拆分 |
+| `/ckpt` | 列出 checkpoint |
 | `/restore <名称>` | 从 checkpoint 恢复 |
+| `/tools` | 查看可用工具 |
 | `/quit` | 退出 |
 
-## 层级 Skill 树
+## APO 优化原理
 
-Skill 可以用**文件夹结构**组织成树形层级：
+APO（Automatic Prompt Optimization）引擎对齐 [Agent-Lightning](https://github.com/microsoft/agent-lightning/) 的设计，核心是 **Beam Search + 文本梯度下降**：
 
 ```
-my-writing-tree/
-├── _meta.yaml          # 包级元信息
-├── root.yaml           # 根技能（通用写作 prompt）
-├── social/
-│   ├── _meta.yaml
-│   ├── root.yaml       # 社交类子技能
-│   ├── moments.yaml    # 朋友圈
-│   └── weibo.yaml      # 微博
-└── business/
-    ├── root.yaml       # 商务类子技能
-    ├── email.yaml
-    └── product.yaml
+                    ┌─ 梯度模板 1 ─┐     ┌─ 编辑模板 1（激进重写）─┐
+失败 Traces ──→     ├─ 梯度模板 2 ─┤ ──→ ├─ 编辑模板 2（保守修复）─┤ ──→ 评分 ──→ Top-K Beam
+                    └─ 梯度模板 3 ─┘     └─ branch_factor 个候选  ─┘
 ```
 
-**创建 Skill 树示例：**
+**单轮流程：**
 
-```bash
-# 创建目录结构
-mkdir -p my-skills/social my-skills/business
+1. **采样 Traces** — 从反馈中选取失败案例
+2. **计算文本梯度** — 随机选梯度模板（3 种），让 judge 模型分析"prompt 哪里导致了失败"
+3. **生成候选** — 随机选编辑模板（激进重写 / 保守修复），每个 parent prompt 生成 `branch_factor` 个候选
+4. **评分选择** — 对所有候选 + 原 beam 评分，保留 top `beam_width` 个
 
-# 在 root.yaml 中写你的根技能
-cat > my-skills/root.yaml << 'EOF'
-name: writing-assistant
-system_prompt: 你是一位专业的中文写作助手。
-EOF
+**两种模式：**
 
-# 启动
-python -m evo_framework.main --skill my-skills/
-```
+| 模式 | 配置 | 行为 |
+|------|------|------|
+| 单轨 (默认) | `beam_width=1` | 一次梯度 → N 候选 → 选最佳，兼容旧版 |
+| Beam Search | `beam_width>1` | 保留 top-k prompt 跨轮优化，更稳定 |
 
-**自动拆分**：优化时如果反馈覆盖多个不同领域，框架会自动建议拆分成子技能（`/split` 命令或 `--optimize` 时自动触发）。
+支持断点续跑——中断后 `.evo_resume.json` 记录已完成的节点，下次自动跳过。
 
-## Checkpoint 系统
+> 详见 [docs/design/apo-optimization.md](./docs/design/apo-optimization.md)
 
-每次 `/optimize` 后会自动保存 checkpoint 到 `ckpt/` 目录：
+## Checkpoint
+
+每次优化自动保存 checkpoint：
 
 ```
 ckpt/
 └── writing-assistant_v1.2_20260306_140000/
-    ├── skill/          # 完整的 skill 文件（或 skill 树）
-    │   └── root.yaml
+    ├── skill/          # 完整 skill 树
+    │   └── SKILL.md
     └── mem/
-        ├── traces.jsonl     # 交互历史
-        └── meta.json        # 元数据（版本、时间等）
+        ├── traces.jsonl
+        └── meta.json
 ```
 
-**从 checkpoint 恢复：**
-
 ```bash
-# CLI 中恢复
-/ckpt                                    # 列出所有 checkpoint
-/restore writing-assistant_v1.2_20260306_140000  # 恢复
+# CLI 恢复
+/ckpt                                                # 列出
+/restore writing-assistant_v1.2_20260306_140000       # 恢复
 
-# 命令行直接恢复
-python -m evo_framework.main --ckpt ckpt/writing-assistant_v1.2_20260306_140000
+# 命令行恢复
+python -m evoskill.main --ckpt ckpt/writing-assistant_v1.2_20260306_140000
 ```
 
 ## 项目结构
 
-### v0.2.0 架构 (evoskill)
-
 ```
-evoskill/                    # 核心模块
+evoskill/
 ├── core/                   # 核心抽象层
-│   ├── abc.py             # 抽象基类 (Prompt, Gradient, Experience)
-│   ├── prompts.py         # Prompt 实现 (Text, Multimodal, Structured)
-│   ├── gradient.py        # 梯度实现 (Simple, Multimodal, History)
-│   ├── experience.py      # 经验和反馈 (Conversation, Multimodal)
-│   ├── base_adapter.py    # 适配器基类 (compute_gradient, apply_gradient)
-│   ├── optimizer.py       # TrainFreeOptimizer (TGD 核心算法)
-│   ├── tree_optimizer.py  # TreeAwareOptimizer (树感知优化) ⭐ NEW
-│   ├── strategies.py      # 优化策略 (保守/激进/自适应)
-│   └── validators.py      # 验证器 (Auto, Metric, Composite)
-│
+│   ├── abc.py             # 抽象基类
+│   ├── optimizer.py       # TrainFreeOptimizer (TGD)
+│   ├── tree_optimizer.py  # TreeAwareOptimizer (拆分/剪枝)
+│   ├── strategies.py      # 优化策略（保守/激进/自适应）
+│   └── validators.py      # 验证器
 ├── adapters/              # 模型适配器
-│   ├── openai.py         # OpenAI 适配器 (GPT-4o, o1)
-│   └── anthropic.py      # Anthropic 适配器 (Claude 3.5)
-│
-├── registry.py           # 插件注册系统 (@adapter, @optimizer, @hook)
-├── tools.py              # 工具注册系统 (@tool, HTTP, MCP)
-│
-└── [legacy]              # 向后兼容 (v0.1)
-    ├── schema.py, skill.py, skill_tree.py
-    ├── checkpoint.py, storage.py
-    └── optimizer.py (APOEngine)
+│   ├── openai.py          # OpenAI / 兼容 API
+│   └── anthropic.py       # Anthropic Claude 4.5/4.6
+├── schema.py              # 数据模型 (Skill, Message, Trace, ToolRef)
+├── skill.py               # SKILL.md 解析器/写入器
+├── skill_tree.py          # 层级 Skill 树管理 (graft/split/merge/prune)
+├── optimizer.py           # APOEngine (Beam Search + 单轨)
+├── tools.py               # 工具系统 (HTTP, MCP, script.py)
+├── resume.py              # 断点续跑状态管理
+├── checkpoint.py          # Checkpoint 快照
+├── cli.py                 # 交互式 CLI (Human-in-the-Loop)
+├── registry.py            # 插件系统 (@adapter, @optimizer)
+└── main.py                # 入口
 ```
-
-### 核心组件职责
-
-| 组件 | 职责 | 文件路径 |
-|------|------|---------|
-| **核心抽象** | 定义统一接口 | `evoskill/core/abc.py` |
-| **优化引擎** | TGD 优化算法 | `evoskill/core/optimizer.py` |
-| **树优化器** | 树感知优化（拆分/剪枝）| `evoskill/core/tree_optimizer.py` ⭐ NEW |
-| **模型适配器** | 连接不同 LLM | `evoskill/adapters/` |
-| **插件系统** | 注册自定义组件 | `evoskill/registry.py` |
-| **工具系统** | 注册第三方工具 | `evoskill/tools.py` |
-
-### 树感知优化架构
-
-```mermaid
-graph TD
-    A[TreeAwareOptimizer] --> B[配置 TreeOptimizerConfig]
-    A --> C[基础优化器 TrainFreeOptimizer]
-
-    A --> D[主流程 optimize_tree]
-    D --> E[遍历树 bottom-up]
-
-    E --> F[analyze_split_need]
-    E --> G[generate_child_prompts]
-    E --> H[analyze_prune_need]
-    E --> I[optimize_prompt_section]
-
-    F --> J{需要拆分?}
-    J -->|矛盾反馈| K[生成子 specs]
-    K --> G
-    G --> L[创建子 Skills]
-
-    I --> M{需要剪枝?}
-    H --> M
-    M -->|低性能| N[移除节点]
-    M -->|高性能| O[保留节点]
-
-    style A fill:#e1f5ff
-    style D fill:#fff9c4
-    style F fill:#ffcdd2
-    style G fill:#ffcdd2
-    style H fill:#ffcdd2
-    style I fill:#fff9c4
-```
-
-### 向后兼容
-
-v0.1 的 `evo_framework/` 包仍然可用，会自动重导出 `evoskill`（显示 DeprecationWarning）。
-
-## APO 优化原理
-
-evoskill 支持两种优化模式：**交互式优化**（人工提供反馈）和**完全自动化优化**（无需人工干预）。
-
-### 两种优化模式对比
-
-| 模式 | 反馈来源 | 适用场景 | 优势 | 示例文件 |
-|------|---------|---------|------|---------|
-| **交互式优化** | 人工标注 `/bad`, `/rewrite` | 开发调试、快速迭代 | 精准控制、灵活调整 | `example_optimizer.py` |
-| **完全自动化** | 测试集 + LLM Judge | 生产环境、批量优化 | 无需人工、持续优化 | `example_fully_automatic.py` |
-
-### 模式 1: 交互式优化流程
-
-用户在 CLI 中提供反馈，手动触发优化：
-
-```mermaid
-graph TD
-    A[用户启动 CLI] --> B[加载初始 Prompt]
-    B --> C[用户提问]
-    C --> D[Agent 生成回复]
-    D --> E{用户满意吗?}
-
-    E -->|满意| C
-    E -->|不满意| F[标记反馈]
-
-    F --> G[/bad 原因]
-    F --> H[/rewrite 理想回答]
-    F --> I[/target 优化方向]
-
-    G --> J[触发 /optimize]
-    H --> J
-    I --> J
-
-    J --> K[TGD 优化循环]
-    K --> L[保存新 Prompt]
-    L --> C
-
-    style A fill:#e1f5ff
-    style F fill:#fff9c4
-    style K fill:#fff9c4
-    style L fill:#c8e6c9
-```
-
-**核心步骤**：
-1. **收集反馈** - 用户通过 `/bad`、`/rewrite` 标记交互
-2. **诊断失败** - 筛选低分 Trace，提取反馈信息
-3. **计算梯度** - 让 Judge 模型分析"为什么 prompt 导致了这些问题"
-4. **更新 Prompt** - 让 Judge 模型基于分析重写 System Prompt
-5. **应用 & 存档** - 版本号 +1，保存到 YAML + checkpoint
-
-### 模式 2: 完全自动化优化流程
-
-基于测试集和 LLM Judge，无需人工干预：
-
-```mermaid
-graph TD
-    A[初始 Prompt] --> B[准备测试集]
-    B --> C[在测试集上运行]
-
-    C --> D{自动评估}
-    D -->|失败| E[收集失败案例]
-    D -->|通过| F[✅ 优化完成]
-
-    E --> G[计算文本梯度]
-    G --> H[应用梯度更新 Prompt]
-    H --> I[验证新 Prompt]
-
-    I --> J{达到目标?}
-    J -->|否| C
-    J -->|是| F
-
-    style A fill:#e1f5ff
-    style B fill:#e1f5ff
-    style F fill:#c8e6c9
-    style E fill:#fff9c4
-    style G fill:#fff9c4
-    style H fill:#fff9c4
-```
-
-**核心思想**：
-- 失败案例 = 训练信号
-- 文本梯度 = 失败分析
-- 更新 = 重写提示词
-- 无需训练，仅用 API
-
-### 核心 TGD 优化循环（内部）
-
-```mermaid
-graph LR
-    A[失败案例] --> B[梯度计算]
-
-    B --> C[分析失败原因]
-    C --> D[生成改进建议]
-
-    D --> E[梯度应用]
-    E --> F[重写 Prompt]
-
-    F --> G{验证?}
-    G -->|是| H[评分]
-    G -->|否| I[返回新 Prompt]
-
-    H --> I
-    I --> J[版本号 +1]
-
-    style A fill:#ffcdd2
-    style B fill:#fff9c4
-    style E fill:#fff9c4
-    style I fill:#c8e6c9
-```
-
-### 优化特性
-
-- **目标导向** - 设了 `/target` 后，梯度分析和 prompt 重写都会以这个方向为指导
-- **层级优化** - Skill 树模式下，优化是**底向上**的：先优化叶子节点，再优化父节点
-- **自动拆分** - 优化过程中可能**自动拆分**：如果不同任务的反馈互相矛盾 → 建议拆分为子技能
-- **自动剪枝** - 根据性能指标自动移除低效子节点
-- **树感知优化** - 攌持拆分、剪枝，递归优化整棵树（⭐ 新 in v0.2.0)
-- **策略选择** - 支持保守/激进/自适应三种优化策略
-- **验证机制** - 支持自动验证、指标验证、组合验证
-- **部分优化** - 支持只优化 prompt 的特定部分（指令、示例、约束）⭐ NEW in v0.2.0
 
 ## 配置参考
-
-所有配置都可通过 `.env` 文件或 `EVO_` 前缀的环境变量设置：
 
 | 变量 | 默认值 | 说明 |
 |------|--------|------|
 | `EVO_LLM_API_KEY` | — | API 密钥 |
 | `EVO_LLM_BASE_URL` | `https://api.openai.com/v1` | API 地址 |
 | `EVO_LLM_MODEL` | `gpt-4o` | 聊天模型 |
-| `EVO_LLM_JUDGE_MODEL` | `gpt-4o` | APO 判官模型 |
+| `EVO_LLM_JUDGE_MODEL` | `gpt-4o` | Judge 模型（计算梯度 + 评分） |
 | `EVO_LLM_TEMPERATURE` | `0.7` | 生成温度 |
-| `EVO_STORAGE_TRACE_PATH` | `./data/traces.jsonl` | Trace 存储路径 |
-| `EVO_STORAGE_SKILL_PATH` | `./skills` | Skill 文件目录 |
-| `EVO_APO_MAX_STEPS` | `3` | APO 最大步数 |
-| `EVO_APO_GRADIENT_ACCUMULATION_STEPS` | `5` | 每次优化使用的反馈样本数 |
+| `EVO_STORAGE_TRACE_PATH` | `./data/traces.jsonl` | Trace 路径 |
+| `EVO_STORAGE_SKILL_PATH` | `./skills` | Skill 目录 |
+| `EVO_APO_GRADIENT_ACCUMULATION_STEPS` | `5` | 每次梯度计算的反馈样本数 |
+| `EVO_APO_BEAM_WIDTH` | `1` | Beam 宽度（1=单轨，>1=beam search） |
+| `EVO_APO_BRANCH_FACTOR` | `2` | 每个 parent 生成的候选数 |
+| `EVO_APO_BEAM_ROUNDS` | `3` | Beam search 轮数 |
+
+完整配置模版：[`demo/example/config.yaml`](./demo/example/config.yaml)
+
+## 文档
+
+| 文档 | 说明 |
+|------|------|
+| [APO 优化原理](./docs/design/apo-optimization.md) | 两种优化模式 + TGD 循环 + 断点续跑 |
+| [树感知优化](./docs/design/tree-optimization.md) | 自动拆分、剪枝、部分优化 |
+| [Skill 文件格式](./docs/design/skill-format.md) | Agent Skills 标准 + SKILL.md 格式 |
+| [快速开始](./docs/QUICKSTART.md) | 5 分钟上手 |
+| [使用指南](./docs/USAGE_GUIDE.md) | Skill 加载、配置管理 |
+| [架构设计](./docs/ARCHITECTURE.md) | 核心架构和设计理念 |
+| [核心抽象](./docs/CORE_ABSTRACTION.md) | Prompt、Gradient、Experience 接口 |
+| [工具系统](./docs/TOOLS_GUIDE.md) | Python、HTTP、MCP 工具注册 |
+| [OpenAI 适配器](./docs/OPENAI_ADAPTER.md) | GPT-4o、o1 等 |
+| [Anthropic 适配器](./docs/ANTHROPIC_ADAPTER.md) | Claude 4.5/4.6 系列 |
+| [跨模型 Skill 迁移](./docs/design/cross-model-transfer.md) | 双模型 TGD：大模型优化，小模型执行 |
+| [优化器详解](./docs/OPTIMIZER_COMPLETE.md) | TrainFreeOptimizer 技术文档 |
+| [树优化 Demo](./docs/TREE_OPTIMIZATION_DEMO.md) | 10 分钟最小化树优化最佳实践（论文分类） |
+
+## 致谢
+
+- APO 优化引擎受 [Microsoft Agent-Lightning](https://github.com/microsoft/agent-lightning/) 启发，感谢他们的开源贡献。
+- 论文分类数据集来自 [书生实战营 InternLM Tutorial](https://github.com/InternLM/Tutorial)。
