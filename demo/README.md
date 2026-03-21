@@ -34,7 +34,7 @@ python demo/demo_from_skill.py
 直接进入 CLI 聊天和实时优化：
 
 ```bash
-python -m evo_framework.main --skill demo/writing-skills.yaml
+python -m evoskill.main --skill demo/writing-skills
 ```
 
-主要命令：`/bad`、`/rewrite`、`/target`、`/optimize`、`/image`、`/save`、`/quit`
+主要命令：`/bad`、`/rewrite`、`/export-dpo`、`/target`、`/optimize`、`/image`、`/save`、`/quit`

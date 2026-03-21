@@ -44,7 +44,7 @@ print(exp_with_feedback.is_failure)  # True
 ### 3. 使用MockAdapter测试
 
 ```python
-from evoskill.core import MockAdapter
+from evoskill import MockAdapter
 
 adapter = MockAdapter()
 

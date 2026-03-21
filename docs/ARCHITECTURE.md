@@ -184,7 +184,8 @@ ckpt/
 |------|----------|------|
 | `/image <path>` | `_cmd_image` | 附加图片 |
 | `/bad <reason>` | `_cmd_bad` | 标记不好 |
-| `/rewrite <text>` | `_cmd_rewrite` | 提供理想回答 |
+| `/rewrite <text>` | `_cmd_rewrite` | 提供理想回答（同时积累 DPO 数据） |
+| `/export-dpo <path>` | `_cmd_export_dpo` | 导出 DPO 偏好数据 |
 | `/target <text>` | `_cmd_target` | 设置优化方向 |
 | `/save` | `_cmd_save` | 保存 skill |
 | `/optimize` | `_cmd_optimize` | APO 优化 + 自动 checkpoint |
@@ -199,8 +200,11 @@ ckpt/
 - `--config <path>` — YAML 配置文件路径（见 `demo/example/config.yaml`）
 - `--skill <name-or-path>` — 支持 YAML 文件**和**目录（自动判断是否加载为树）
 - `--optimize` — 批量优化模式（支持树）
+- `--dataset <path>` — ChatML JSONL 数据集路径，配合 `--optimize` 自动评估并生成 traces
+- `--no-resume` — 跳过断点续跑提示，直接重新开始（适用于非交互环境）
 - `--ckpt <path>` — 从 checkpoint 恢复并继续
 - `--ckpt-dir <dir>` — 指定 checkpoint 存储目录（默认 `./ckpt`）
+- `-v / --verbose` — 启用 DEBUG 日志
 
 ## 4. 扩展点
 
