@@ -112,7 +112,7 @@ def test_message_audio_content_part():
             AudioContent(
                 audio_url=AudioURL(url="data:audio/wav;base64,ZmFrZQ==")
             ),
-            TextContent(text="请总结这段语音"),
+            TextContent(text="Please summarize this audio clip"),
         ],
     )
 

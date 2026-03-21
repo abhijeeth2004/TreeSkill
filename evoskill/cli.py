@@ -6,7 +6,7 @@ Commands
 /audio <path>   — attach a local audio file (base64-encoded) to the next message.
 /bad <reason>   — mark the *previous* interaction with a low score + critique.
 /rewrite <txt>  — mark the *previous* interaction with a correction.
-/target <text>  — set a one-line optimization target (e.g. "更像人").
+/target <text>  — set a one-line optimization target (e.g. "more human").
 /save           — force-save the current skill to disk.
 /optimize       — trigger an APO optimization cycle.
 /help           — show available commands and brief descriptions.
@@ -68,23 +68,23 @@ _THEME = Theme(
 )
 
 _COMMAND_SPECS = [
-    ("/", "", "显示所有命令和简要说明"),
-    ("/help", "", "显示所有命令和简要说明"),
-    ("/image", "<path>", "给下一条消息附加本地图片"),
-    ("/audio", "<path>", "给下一条消息附加本地音频"),
-    ("/bad", "<reason>", "给上一轮回答打差评并记录原因"),
-    ("/rewrite", "<ideal response>", "给上一轮回答提供理想改写（同时收集 DPO 偏好数据）"),
-    ("/export-dpo", "<output.jsonl>", "导出 DPO 偏好数据（用于微调）"),
-    ("/target", "<text>", "设置长期优化方向"),
-    ("/save", "", "立即保存当前 skill"),
-    ("/optimize", "", "基于已记录反馈优化当前 skill"),
-    ("/tools", "", "查看模型可用的内置工具"),
-    ("/tree", "", "查看当前 skill 树"),
-    ("/select", "<path>", "切换到 skill 树中的某个节点"),
-    ("/split", "", "分析当前 skill 是否适合拆分"),
-    ("/ckpt", "", "查看可用 checkpoint"),
-    ("/restore", "<name>", "从 checkpoint 恢复"),
-    ("/quit", "", "退出 CLI"),
+    ("/", "", "Show all commands and brief descriptions"),
+    ("/help", "", "Show all commands and brief descriptions"),
+    ("/image", "<path>", "Attach a local image to the next message"),
+    ("/audio", "<path>", "Attach a local audio file to the next message"),
+    ("/bad", "<reason>", "Mark the previous reply as bad and record the reason"),
+    ("/rewrite", "<ideal response>", "Provide an ideal rewrite for the previous reply and collect DPO preference data"),
+    ("/export-dpo", "<output.jsonl>", "Export DPO preference data for fine-tuning"),
+    ("/target", "<text>", "Set the long-term optimization target"),
+    ("/save", "", "Save the current skill immediately"),
+    ("/optimize", "", "Optimize the current skill using recorded feedback"),
+    ("/tools", "", "Show built-in tools available to the model"),
+    ("/tree", "", "Show the current skill tree"),
+    ("/select", "<path>", "Switch to a node inside the skill tree"),
+    ("/split", "", "Analyze whether the current skill should be split"),
+    ("/ckpt", "", "Show available checkpoints"),
+    ("/restore", "<name>", "Restore from a checkpoint"),
+    ("/quit", "", "Exit the CLI"),
 ]
 
 
@@ -176,9 +176,9 @@ class ChatCLI:
         # Count existing DPO pairs for display
         dpo_count = len(self._storage.get_dpo_pairs())
         dpo_tip = (
-            f"\n[dim]DPO 偏好数据: {dpo_count} 条 | "
-            f"用 /rewrite 提供理想回复可积累 DPO 训练数据, "
-            f"/export-dpo 导出[/dim]"
+            f"\n[dim]DPO preference pairs: {dpo_count} | "
+            f"use /rewrite to provide an ideal reply and accumulate DPO training data, "
+            f"then export with /export-dpo[/dim]"
         )
 
         self._console.print(
@@ -188,7 +188,7 @@ class ChatCLI:
                 f"({self._skill.version})\n"
                 f"Model: [cyan]{self._config.llm.model}[/cyan]\n"
                 f"Built-in tools: [cyan]{', '.join(sorted(self._builtin_tools))}[/cyan]\n\n"
-                f"[dim]输入 / 或 /help 查看命令说明[/dim]"
+                f"[dim]Type / or /help to view command help[/dim]"
                 + dpo_tip,
                 title="🧬 EvoSkill",
                 border_style="bright_blue",
@@ -197,7 +197,7 @@ class ChatCLI:
 
         while True:
             try:
-                raw = self._prompt_session.prompt("You (/ 查看命令)\n> ")
+                raw = self._prompt_session.prompt("You (/ for commands)\n> ")
             except (EOFError, KeyboardInterrupt):
                 self._console.print("\n[info]Goodbye![/info]")
                 break
@@ -349,7 +349,7 @@ class ChatCLI:
         self._storage.upsert(self._last_trace)
         self._console.print("[success]Feedback recorded (bad).[/success]")
         self._console.print(
-            "[dim]Tip: 用 /rewrite <理想回复> 可同时积累 DPO 偏好数据[/dim]"
+            "[dim]Tip: use /rewrite <ideal response> to collect DPO preference data too[/dim]"
         )
         return True
 
@@ -371,14 +371,14 @@ class ChatCLI:
         count = self._storage.export_dpo(output)
         if count == 0:
             self._console.print(
-                "[warning]没有可导出的 DPO 数据。[/warning]\n"
-                "[dim]使用 /rewrite <理想回复> 对模型回答进行改写，即可积累偏好对。[/dim]"
+                "[warning]No DPO data available to export.[/warning]\n"
+                "[dim]Use /rewrite <ideal response> to rewrite a model reply and collect preference pairs.[/dim]"
             )
         else:
             self._console.print(
-                f"[success]已导出 {count} 条 DPO 偏好对 →[/success] {output}\n"
-                f"[dim]格式: {{prompt, chosen, rejected, score, critique}}，"
-                f"可直接用于 DPO/RLHF 微调。[/dim]"
+                f"[success]Exported {count} DPO preference pairs →[/success] {output}\n"
+                f"[dim]Format: {{prompt, chosen, rejected, score, critique}}. "
+                f"Ready for DPO/RLHF fine-tuning.[/dim]"
             )
         return True
 
@@ -405,9 +405,9 @@ class ChatCLI:
         # Check for resume state
         resume = ResumeState.load(self._skill_path)
         if resume:
-            self._console.print(f"[yellow]⚠ 发现未完成的优化[/yellow]")
+            self._console.print(f"[yellow]⚠ Found an unfinished optimization[/yellow]")
             self._console.print(resume.summary())
-            choice = Prompt.ask("继续 (resume) 还是重新开始 (restart)?",
+            choice = Prompt.ask("Resume the previous run or restart from scratch?",
                                 choices=["resume", "restart"], default="resume")
             if choice == "restart":
                 resume.clear()
@@ -439,13 +439,13 @@ class ChatCLI:
             resume.clear()  # success — remove resume file
         except KeyboardInterrupt:
             self._console.print(
-                "\n[warning]⚠ 优化被中断，进度已保存。再次 /optimize 可从断点继续。[/warning]"
+                "\n[warning]⚠ Optimization interrupted. Progress has been saved. Run /optimize again to resume.[/warning]"
             )
             return True
         except Exception as e:
             self._console.print(
-                f"\n[error]✗ 优化出错: {e}[/error]\n"
-                f"[dim]进度已保存，再次 /optimize 可从断点继续。[/dim]"
+                f"\n[error]✗ Optimization failed: {e}[/error]\n"
+                f"[dim]Progress has been saved. Run /optimize again to resume.[/dim]"
             )
             return True
 
@@ -464,10 +464,10 @@ class ChatCLI:
         if not text:
             if self._skill.target:
                 self._console.print(
-                    f"[info]当前优化方向:[/info] {self._skill.target}"
+                    f"[info]Current optimization target:[/info] {self._skill.target}"
                 )
             else:
-                self._console.print("[warning]尚未设置优化方向。用法: /target <方向>[/warning]")
+                self._console.print("[warning]No optimization target has been set yet. Usage: /target <text>[/warning]")
             return True
         self._skill = self._skill.model_copy(update={"target": text})
         if self._skill_tree:
@@ -476,7 +476,7 @@ class ChatCLI:
         else:
             skill_module.save(self._skill, self._skill_path)
         self._console.print(
-            f"[success]优化方向已设置:[/success] {text}"
+            f"[success]Optimization target set:[/success] {text}"
         )
         return True
 
@@ -496,7 +496,7 @@ class ChatCLI:
 
     def _cmd_tree(self) -> bool:
         if not self._skill_tree:
-            self._console.print("[warning]当前未加载 Skill 树。请用目录路径启动。[/warning]")
+            self._console.print("[warning]No skill tree is loaded. Start with a skill directory path.[/warning]")
             return True
         tree_str = self._skill_tree.list_tree()
         self._console.print(Panel(tree_str, title="🌳 Skill Tree", border_style="green"))
@@ -504,7 +504,7 @@ class ChatCLI:
 
     def _cmd_select(self, dotpath: str) -> bool:
         if not self._skill_tree:
-            self._console.print("[warning]当前未加载 Skill 树。[/warning]")
+            self._console.print("[warning]No skill tree is loaded.[/warning]")
             return True
         if not dotpath:
             self._console.print("[error]Usage: /select <dotpath> (e.g. social.moments)[/error]")
@@ -513,7 +513,7 @@ class ChatCLI:
             node = self._skill_tree.get(dotpath)
             self._skill = node.skill
             self._console.print(
-                f"[success]已切换到:[/success] {node.name} ({node.skill.version})"
+                f"[success]Switched to:[/success] {node.name} ({node.skill.version})"
             )
         except KeyError as e:
             self._console.print(f"[error]{e}[/error]")
@@ -522,36 +522,36 @@ class ChatCLI:
     def _cmd_split(self) -> bool:
         traces = self._storage.get_feedback_samples()
         if len(traces) < 2:
-            self._console.print("[warning]至少需要 2 条反馈才能分析拆分。[/warning]")
+            self._console.print("[warning]At least 2 feedback samples are required to analyze a split.[/warning]")
             return True
-        with self._console.status("[dim]分析是否需要拆分…[/dim]"):
+        with self._console.status("[dim]Analyzing whether a split is needed…[/dim]"):
             specs = self._optimizer.analyze_split_need(self._skill, traces)
         if not specs:
-            self._console.print("[info]当前 Skill 不需要拆分。[/info]")
+            self._console.print("[info]The current skill does not need to be split.[/info]")
             return True
-        self._console.print(f"[success]建议拆分为 {len(specs)} 个子技能:[/success]")
+        self._console.print(f"[success]Suggested split into {len(specs)} child skills:[/success]")
         for s in specs:
             self._console.print(f"  • {s['name']}: {s.get('description', '')}")
-        confirm = Prompt.ask("确认拆分?", choices=["y", "n"], default="y")
+        confirm = Prompt.ask("Confirm split?", choices=["y", "n"], default="y")
         if confirm == "y":
             if not self._skill_tree:
                 # Create a tree on the fly
                 from evoskill.skill_tree import SkillNode
                 root = SkillNode(name=self._skill.name, skill=self._skill)
                 self._skill_tree = SkillTree(root=root, base_path=self._skill_path.parent)
-            with self._console.status("[dim]生成子技能 prompt…[/dim]"):
+            with self._console.status("[dim]Generating child skill prompts…[/dim]"):
                 enriched = self._optimizer.generate_child_prompts(self._skill, specs)
             self._skill_tree.split("", enriched)
             self._skill_tree.save()
-            self._console.print("[success]拆分完成！用 /tree 查看。[/success]")
+            self._console.print("[success]Split complete. Use /tree to inspect it.[/success]")
         return True
 
     def _cmd_ckpt(self) -> bool:
         ckpts = self._ckpt.list_checkpoints()
         if not ckpts:
-            self._console.print("[warning]没有找到任何 checkpoint。[/warning]")
+            self._console.print("[warning]No checkpoints found.[/warning]")
             return True
-        self._console.print(f"[info]找到 {len(ckpts)} 个 checkpoint:[/info]")
+        self._console.print(f"[info]Found {len(ckpts)} checkpoints:[/info]")
         for c in ckpts:
             meta = c["meta"]
             ts = meta.get("created_at", "?")
@@ -575,11 +575,11 @@ class ChatCLI:
             )
             self._skill = skill_module.load(self._skill_path)
             self._console.print(
-                f"[success]已恢复 checkpoint:[/success] {name} "
+                f"[success]Restored checkpoint:[/success] {name} "
                 f"(version={meta.get('skill_version', '?')})"
             )
         except Exception as e:
-            self._console.print(f"[error]恢复失败: {e}[/error]")
+            self._console.print(f"[error]Restore failed: {e}[/error]")
         return True
 
     # ------------------------------------------------------------------
@@ -632,7 +632,7 @@ class ChatCLI:
 
         if prefix and not matches:
             self._console.print(
-                f"[warning]没有匹配到命令:[/warning] {prefix}\n[dim]输入 / 或 /help 查看完整命令列表[/dim]"
+                f"[warning]No matching command found:[/warning] {prefix}\n[dim]Type / or /help to view the full command list[/dim]"
             )
             return
 

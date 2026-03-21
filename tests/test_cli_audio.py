@@ -78,13 +78,13 @@ def test_build_user_message_includes_pending_audio(tmp_path: Path):
     audio_path.write_bytes(b"fake wav bytes")
 
     cli._cmd_audio(str(audio_path))
-    message = cli._build_user_message("请总结这段录音")
+    message = cli._build_user_message("Please summarize this recording")
 
     assert message.role == "user"
     assert isinstance(message.content, list)
     assert message.content[0].type == "audio_url"
     assert message.content[1].type == "text"
-    assert message.content[1].text == "请总结这段录音"
+    assert message.content[1].text == "Please summarize this recording"
     assert cli._pending_media_parts == []
 
 

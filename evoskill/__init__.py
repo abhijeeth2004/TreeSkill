@@ -18,9 +18,9 @@ def _missing_optional(module_name, feature_name):
 
     def _raiser(*args, **kwargs):
         raise ImportError(
-            f"\n\n❌ {feature_name} 不可用\n\n"
-            f"当前代码库缺少可选模块: {module_name}\n"
-            f"如需使用该功能，请先补齐对应实现文件。\n"
+            f"\n\n❌ {feature_name} is unavailable\n\n"
+            f"The current codebase is missing the optional module: {module_name}\n"
+            f"Add the corresponding implementation files before using this feature.\n"
         )
 
     return _raiser
@@ -77,15 +77,15 @@ try:
 except ImportError as e:
     missing_module = str(e).split("'")[-2] if "'" in str(e) else "unknown"
     raise ImportError(
-        f"\n\n❌ 导入失败: 缺少必需的依赖 '{missing_module}'\n\n"
-        f"解决方法:\n"
-        f"  1. 激活conda环境:\n"
+        f"\n\n❌ Import failed: missing required dependency '{missing_module}'\n\n"
+        f"How to fix it:\n"
+        f"  1. Activate the conda environment:\n"
         f"     conda activate pr\n\n"
-        f"  2. 安装依赖:\n"
+        f"  2. Install the dependency:\n"
         f"     pip install {missing_module}\n\n"
-        f"  或者安装所有依赖:\n"
+        f"  Or install all project dependencies:\n"
         f"     pip install -e .\n\n"
-        f"详细依赖列表请查看 pyproject.toml\n"
+        f"See pyproject.toml for the full dependency list.\n"
     ) from None
 
 # Model adapters (new) - lazy import to avoid dependency issues
@@ -101,10 +101,10 @@ def __getattr__(name):
             return _OpenAIAdapter
         except ImportError:
             raise ImportError(
-                f"\n\n❌ OpenAIAdapter 导入失败\n\n"
-                f"需要安装 OpenAI SDK 和 tiktoken:\n"
+                f"\n\n❌ Failed to import OpenAIAdapter\n\n"
+                f"Install the OpenAI SDK and tiktoken:\n"
                 f"  pip install openai tiktoken\n\n"
-                f"或者安装所有依赖:\n"
+                f"Or install all project dependencies:\n"
                 f"  pip install -e .\n"
             ) from None
     elif name == "AnthropicAdapter":
@@ -113,10 +113,10 @@ def __getattr__(name):
             return _AnthropicAdapter
         except ImportError:
             raise ImportError(
-                f"\n\n❌ AnthropicAdapter 导入失败\n\n"
-                f"需要安装 Anthropic SDK:\n"
+                f"\n\n❌ Failed to import AnthropicAdapter\n\n"
+                f"Install the Anthropic SDK:\n"
                 f"  pip install anthropic\n\n"
-                f"或者安装所有依赖:\n"
+                f"Or install all project dependencies:\n"
                 f"  pip install -e .\n"
             ) from None
     elif name == "MockAdapter":
@@ -125,13 +125,13 @@ def __getattr__(name):
             return _MockAdapter
         except ImportError:
             raise ImportError(
-                f"\n\n❌ MockAdapter 导入失败\n\n"
-                f"MockAdapter 在 examples/mock_adapter.py 中\n"
-                f"确保 examples/ 目录在 Python 路径中\n"
+                f"\n\n❌ Failed to import MockAdapter\n\n"
+                f"MockAdapter lives in examples/mock_adapter.py\n"
+                f"Make sure examples/ is available on the Python path.\n"
             ) from None
     raise AttributeError(
         f"module {__name__!r} has no attribute {name!r}\n"
-        f"可用的适配器: OpenAIAdapter, AnthropicAdapter, MockAdapter (需要安装依赖)"
+        f"Available adapters: OpenAIAdapter, AnthropicAdapter, MockAdapter (dependencies required)"
     )
 
 # Registry system (new)
@@ -199,11 +199,11 @@ except ImportError:
     ScriptValidator = None
     ScriptValidationResult = None
     ScriptIssue = None
-    validate_script = _missing_optional("evoskill.script", "脚本校验")
-    validate_script_file = _missing_optional("evoskill.script", "脚本校验")
-    load_script = _missing_optional("evoskill.script", "脚本加载")
-    save_script = _missing_optional("evoskill.script", "脚本保存")
-    load_script_as_tools = _missing_optional("evoskill.script", "脚本工具加载")
+    validate_script = _missing_optional("evoskill.script", "script validation")
+    validate_script_file = _missing_optional("evoskill.script", "script validation")
+    load_script = _missing_optional("evoskill.script", "script loading")
+    save_script = _missing_optional("evoskill.script", "script saving")
+    load_script_as_tools = _missing_optional("evoskill.script", "script tool loading")
 
 # Memory module
 try:
@@ -231,8 +231,8 @@ try:
     )
 except ImportError:
     AgendaManager = None
-    compile_agenda_context = _missing_optional("evoskill.agenda", "日程上下文编译")
-    parse_due = _missing_optional("evoskill.agenda", "日程时间解析")
+    compile_agenda_context = _missing_optional("evoskill.agenda", "agenda context compilation")
+    parse_due = _missing_optional("evoskill.agenda", "agenda time parsing")
 
 __version__ = "0.2.0"
 __author__ = "EvoSkill Team"
