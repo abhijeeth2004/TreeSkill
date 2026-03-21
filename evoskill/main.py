@@ -64,13 +64,24 @@ def _resolve_skill_path(name_or_path: str, config: GlobalConfig) -> Path:
     return default_dir.resolve()
 
 
-def _handle_resume(skill_path: Path) -> ResumeState | None:
+def _handle_resume(skill_path: Path, *, force_restart: bool = False) -> ResumeState | None:
     """Check for an incomplete optimization and ask the user what to do.
 
     Returns the ResumeState to continue, or None to start fresh.
+
+    Parameters
+    ----------
+    force_restart : bool
+        If True (``--no-resume``), discard any previous state without
+        prompting. This avoids hanging in non-interactive environments.
     """
     state = ResumeState.load(skill_path)
     if state is None:
+        return None
+
+    if force_restart:
+        state.clear()
+        console.print("[dim]已清除旧进度（--no-resume），重新开始[/dim]")
         return None
 
     console.print(f"\n[bold yellow]⚠ 发现未完成的优化任务[/bold yellow]")
@@ -131,6 +142,12 @@ def main(argv: list[str] | None = None) -> None:
         default=None,
         help="Path to a ChatML JSONL dataset file. Used with --optimize to "
         "auto-evaluate the skill and generate traces before running APO.",
+    )
+    parser.add_argument(
+        "--no-resume",
+        action="store_true",
+        help="Discard any previous incomplete optimization and start fresh "
+        "(skip the interactive resume/restart prompt).",
     )
     parser.add_argument(
         "--verbose", "-v",
@@ -216,7 +233,7 @@ def main(argv: list[str] | None = None) -> None:
             sys.exit(0)
 
         # Check for resume state
-        resume = _handle_resume(skill_path)
+        resume = _handle_resume(skill_path, force_restart=args.no_resume)
         if resume is None:
             resume = ResumeState.create(
                 skill_dir=skill_path,

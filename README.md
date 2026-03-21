@@ -183,7 +183,8 @@ writing-skills/
 | 命令 | 作用 |
 |------|------|
 | `/bad <原因>` | 标记上条回复不好 |
-| `/rewrite <文本>` | 提供理想回答 |
+| `/rewrite <文本>` | 提供理想回答（同时积累 DPO 偏好数据） |
+| `/export-dpo <output.jsonl>` | 导出 DPO 偏好数据（用于微调） |
 | `/target <方向>` | 设置优化方向 |
 | `/optimize` | 触发 APO 优化（支持断点续跑） |
 | `/image <路径>` | 附加图片（多模态） |

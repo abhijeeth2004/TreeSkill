@@ -3,15 +3,22 @@
 Each line in the JSONL file is a self-contained JSON object representing
 a single ``Trace`` record.  This makes it safe for concurrent appenders
 and trivially streamable.
+
+DPO export: traces with ``feedback.correction`` can be exported as
+preference pairs for Direct Preference Optimization fine-tuning.
 """
 
 from __future__ import annotations
 
+import json
+import logging
 from pathlib import Path
-from typing import List, Optional
+from typing import Any, Dict, List, Optional, Union
 
 from evoskill.config import StorageConfig
-from evoskill.schema import Trace
+from evoskill.schema import Message, Trace
+
+logger = logging.getLogger(__name__)
 
 
 class TraceStorage:
@@ -64,3 +71,107 @@ class TraceStorage:
             if t.feedback is not None
             and min_score <= t.feedback.score <= max_score
         ]
+
+    # ------------------------------------------------------------------
+    # DPO Export
+    # ------------------------------------------------------------------
+
+    def get_dpo_pairs(self) -> List[Dict[str, Any]]:
+        """Extract DPO preference pairs from stored traces.
+
+        A valid DPO pair requires:
+        - ``feedback.correction`` (the human-provided ideal response = chosen)
+        - ``prediction`` (the model's original response = rejected)
+
+        Deduplicates by trace id (the /rewrite flow re-appends the same
+        trace, so the JSONL may contain duplicates).
+
+        Returns a list of dicts with keys:
+        ``prompt``, ``chosen``, ``rejected``, ``score``, ``critique``.
+        """
+        all_traces = self.load_all()
+
+        # Deduplicate: keep the last occurrence of each trace id
+        # (the one with feedback attached)
+        seen: Dict[str, Trace] = {}
+        for t in all_traces:
+            seen[t.id] = t
+
+        pairs: List[Dict[str, Any]] = []
+        for t in seen.values():
+            if t.feedback is None or not t.feedback.correction:
+                continue
+
+            prompt = _messages_to_chatml(t.inputs)
+            rejected = _message_content_to_str(t.prediction.content)
+            chosen = t.feedback.correction
+
+            pairs.append({
+                "prompt": prompt,
+                "chosen": chosen,
+                "rejected": rejected,
+                "score": t.feedback.score,
+                "critique": t.feedback.critique,
+            })
+
+        return pairs
+
+    def export_dpo(
+        self,
+        output_path: Union[str, Path],
+        *,
+        include_system: bool = True,
+    ) -> int:
+        """Export DPO preference pairs to a JSONL file.
+
+        Parameters
+        ----------
+        output_path : str | Path
+            Where to write the DPO JSONL file.
+        include_system : bool
+            Whether to include system messages in the prompt field.
+
+        Returns
+        -------
+        int
+            Number of pairs exported.
+        """
+        pairs = self.get_dpo_pairs()
+        if not include_system:
+            for pair in pairs:
+                pair["prompt"] = [
+                    m for m in pair["prompt"]
+                    if m["role"] != "system"
+                ]
+
+        output_path = Path(output_path)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        with output_path.open("w", encoding="utf-8") as fh:
+            for pair in pairs:
+                fh.write(json.dumps(pair, ensure_ascii=False) + "\n")
+
+        logger.info("Exported %d DPO pairs to %s", len(pairs), output_path)
+        return len(pairs)
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def _message_content_to_str(content) -> str:
+    """Extract plain text from Message content (str or List[ContentPart])."""
+    if isinstance(content, str):
+        return content
+    texts = []
+    for part in content:
+        if hasattr(part, "text"):
+            texts.append(part.text)
+    return " ".join(texts) if texts else ""
+
+
+def _messages_to_chatml(messages: List[Message]) -> List[Dict[str, str]]:
+    """Convert a list of Message objects to ChatML dicts."""
+    return [
+        {"role": m.role, "content": _message_content_to_str(m.content)}
+        for m in messages
+    ]
