@@ -39,15 +39,15 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # ── Config ─────────────────────────────────────────────
-MAIN_MODEL = os.getenv("TREE_LLM_MODEL", "Qwen/Qwen3-8B")
+MAIN_MODEL = os.getenv("TREE_LLM_MODEL", "SilliconCloud/Qwen3.5-4B")
 JUDGE_MODEL = os.getenv("TREE_LLM_JUDGE_MODEL", "Qwen/Qwen2.5-72B-Instruct")
 DATA_PATH = "demo/data/intern_camp5.csv"
 
 # 只用 3 类，降低复杂度
 CATEGORIES = ["A", "E", "M"]  # 量子物理 / 机器人 / 计算机视觉
-TRAIN_PER_CAT = 8
+TRAIN_PER_CAT = 17
 TEST_PER_CAT = 4
-NUM_ROUNDS = 2
+NUM_ROUNDS = 3
 NUM_CANDIDATES = 2
 MAX_WORKERS = 8
 OUTPUT_DIR = Path("demo/outputs/tree-minimal-10min")
@@ -91,6 +91,10 @@ def load_data():
 
 # ── Classification ─────────────────────────────────────
 
+# Extra body params for the task model (e.g. disable thinking for Qwen3)
+EXTRA_BODY = {"enable_thinking": False}
+
+
 def classify(client: openai.OpenAI, prompt: str, question: str) -> str:
     try:
         r = client.chat.completions.create(
@@ -101,8 +105,9 @@ def classify(client: openai.OpenAI, prompt: str, question: str) -> str:
             ],
             max_tokens=10,
             temperature=0.3,
+            extra_body=EXTRA_BODY,
         )
-        ans = r.choices[0].message.content.strip().upper()
+        ans = (r.choices[0].message.content or "").strip().upper()
         for ch in ans:
             if ch in CATEGORIES:
                 return ch
@@ -181,7 +186,47 @@ def main():
         }),
     })
     llm = LLMClient(config)
+
     engine = APOEngine(config, llm)
+
+    # Real-model scoring (Agent-Lightning style):
+    # 1. Run task model with candidate prompt
+    # 2. Judge grades each output vs expected answer
+    # 3. Average reward = prompt score
+    def real_score_fn(prompt: str, traces: List[Trace]) -> float:
+        # Step 1: run task model in parallel
+        with ThreadPoolExecutor(max_workers=MAX_WORKERS) as pool:
+            futures = {}
+            for t in traces:
+                user_text = t.inputs[-1].content if t.inputs else ""
+                paper = user_text.replace("Paper:\n", "", 1) if user_text.startswith("Paper:\n") else user_text
+                futures[pool.submit(classify, client, prompt, paper)] = t
+            preds = {}
+            for f in as_completed(futures):
+                preds[futures[f].id] = f.result()
+
+        # Step 2: judge grades each (prediction, expected) pair in parallel
+        grade_batches = []
+        for t in traces:
+            expected = t.feedback.correction if t.feedback and t.feedback.correction else None
+            if expected is None:
+                expected = t.prediction.content.strip().upper() if t.prediction.content else ""
+            grade_batches.append(
+                engine._build_grade_messages(preds[t.id], expected)
+            )
+
+        responses = llm.generate_batch(grade_batches, model=JUDGE_MODEL)
+
+        # Step 3: average reward
+        total_reward = sum(
+            engine._parse_score(
+                r.content if isinstance(r.content, str) else str(r.content)
+            )
+            for r in responses
+        )
+        return total_reward / len(responses) if responses else 0.0
+
+    engine._score_fn = real_score_fn
 
     # Create初始 skill 树
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
