@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import base64
 import mimetypes
+import uuid
 from pathlib import Path
 from typing import List, Optional
 
@@ -31,6 +32,7 @@ from prompt_toolkit.completion import Completer, Completion
 from prompt_toolkit.document import Document
 from prompt_toolkit.shortcuts import CompleteStyle
 from rich.console import Console
+from rich.live import Live
 from rich.markdown import Markdown
 from rich.panel import Panel
 from rich.prompt import Prompt
@@ -154,6 +156,7 @@ class ChatCLI:
         self._skill = skill_obj
         self._skill_path = Path(skill_path)
         self._skill_tree = skill_tree
+        self._session_id = str(uuid.uuid4())
 
         self._console = Console(theme=_THEME)
         self._llm = LLMClient(config)
@@ -166,6 +169,7 @@ class ChatCLI:
         self._history: List[Message] = []
         self._last_trace: Optional[Trace] = None
         self._pending_media_parts: List[ContentPart] = []
+        self._stream_live: Optional[Live] = None
 
     # ------------------------------------------------------------------
     # Main loop
@@ -230,33 +234,44 @@ class ChatCLI:
                 full_messages[0] = Message(role="system", content=combined)
             else:
                 full_messages.insert(0, Message(role="system", content=self._tool_guidance_text()))
-            with self._console.status("[dim]Thinking…[/dim]"):
-                response = self._llm.generate(
-                    full_messages,
-                    tools=self._builtin_tools,
-                    on_tool_event=self._on_tool_event,
-                )
+            streamed_text = ""
+
+            def _on_delta(delta: str) -> None:
+                nonlocal streamed_text
+                streamed_text += delta
+                self._render_streaming_assistant(streamed_text)
+
+            with Live(
+                self._streaming_assistant_panel(""),
+                console=self._console,
+                refresh_per_second=12,
+                transient=False,
+            ) as live:
+                self._stream_live = live
+                try:
+                    response = self._llm.generate_stream(
+                        full_messages,
+                        tools=self._builtin_tools,
+                        on_tool_event=self._on_tool_event,
+                        on_delta=_on_delta,
+                    )
+                    self._stream_live.update(
+                        self._final_assistant_panel(response)
+                    )
+                finally:
+                    self._stream_live = None
             self._history.append(response)
 
             # --- trace ---
-            trace = Trace(inputs=list(self._history[:-1]), prediction=response)
+            trace = Trace(
+                session_id=self._session_id,
+                inputs=list(self._history[:-1]),
+                prediction=response,
+            )
             self._storage.append(trace)
             self._last_trace = trace
 
             # --- render ---
-            self._console.print()
-            self._console.print(
-                Panel(
-                    Markdown(
-                        response.content
-                        if isinstance(response.content, str)
-                        else "[multimodal response]"
-                    ),
-                    title="🤖 Assistant",
-                    border_style="bright_cyan",
-                )
-            )
-
     # ------------------------------------------------------------------
     # Command handlers
     # ------------------------------------------------------------------
@@ -617,6 +632,31 @@ class ChatCLI:
             self._console.print(
                 f"[success]tool ✓ {payload.get('name')}[/success] {preview}"
             )
+
+    def _streaming_assistant_panel(self, text: str) -> Panel:
+        body = text if text else "[dim]Thinking...[/dim]"
+        return Panel(
+            body,
+            title="🤖 Assistant",
+            border_style="bright_cyan",
+        )
+
+    def _final_assistant_panel(self, response: Message) -> Panel:
+        return Panel(
+            Markdown(
+                response.content
+                if isinstance(response.content, str)
+                else "[multimodal response]"
+            ),
+            title="🤖 Assistant",
+            border_style="bright_cyan",
+        )
+
+    def _render_streaming_assistant(self, text: str) -> None:
+        if self._stream_live is not None:
+            self._stream_live.update(self._streaming_assistant_panel(text))
+            return
+        self._console.print(self._streaming_assistant_panel(text))
 
     def _show_command_help(self, prefix: Optional[str] = None) -> None:
         prefix = prefix or ""
