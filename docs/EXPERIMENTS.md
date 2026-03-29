@@ -1,10 +1,15 @@
 # 实验记录
 
-> 当前主线请优先看 `SealQA lifecycle (cached search)`。旧的 `APOEngine` / prompt-only demo 已迁到 `demo/archive/`，这里只保留历史结果说明。
+## 当前主线（推荐）
+
+- 复现命令：
+  - `python -m treeskill`（SealQA lifecycle）
+  - `python -m treeskill sealqa-aso`（ASO mini）
+- 旧版/兼容链路仍可查看 `demo/archive/`，不作为当前主线基准。
 
 相关兼容性验证见：[KODE_MINIMAX_THINKING.md](./KODE_MINIMAX_THINKING.md)
 
-## 实验 0: SealQA lifecycle (当前主线)
+## 实验 0: SealQA lifecycle（当前主线）
 
 **日期**: 2026-03-29
 **Demo**: `python -m treeskill`
@@ -21,9 +26,9 @@
 | Pruned | 83.3% | 剪掉低收益 skill 后回退 |
 | Merged | 83.3% | 合并/重整后回归到真实收益 |
 
-**结论**: `Kode + ASO` 在一个简单 SealQA 子集上已经能稳定演示完整 skill 生命周期，并且在验证中支持从 `generate -> evolve -> prune -> merge` 全链路。
+**结论**: `Kode + ASO` 在一个简单 SealQA 子集上已经能稳定演示完整 skill 生命周期，并且在验证中支持从 `root -> generate -> evolve -> prune -> merge` 全链路。
 
-## 实验 1: 前端 Distill ASO（完整链路）
+## 实验 1: 前端 Distill ASO（当前主线，完整链路）
 
 **日期**: 2026-03-29
 **Demo**: `python -m treeskill sealqa-aso`（内部包含前端蒸馏任务入口和主链路实现）
@@ -40,6 +45,12 @@
 | Final | 1.00 |
 
 **结论**: 可完整验证蒸馏任务中 skill program 的生成、进化、剪枝与合并。当前样本内精度显著抬升，主要用于验证链路通畅。
+
+---
+
+## 历史实验（归档）
+
+以下实验保留用于对照，不作为当前主线基准：
 
 ---
 
@@ -123,7 +134,7 @@
 **日期**: 2026-03-27
 **Demo**: `demo/archive/legacy-apo/demo_kode_apo.py`
 **数据**: 8 编码任务 (4 train / 2 val / 2 test)
-**模型**: qwen3.5-plus via OneAPI (actor, 通过 Kode CLI) + GLM-5 (judge)
+**模型**: qwen3.5-plus（actor, 通过 Kode CLI）+ GLM-5（judge）
 **前向引擎**: Kode CLI
 
 | 阶段 | 分数 |
