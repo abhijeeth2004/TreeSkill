@@ -380,10 +380,8 @@ response = adapter.generate(prompt, max_tokens=100)
 
 ## 下一步
 
-- [ ] 实现 AnthropicAdapter（Claude API）
-
-- [ ] 构建优化引擎
-- [ ] 集成到CLI
+- [ ] 继续补齐兼容端点（Azure/AWS Bedrock）
+- [ ] 增强成本/速率控制与重试策略
 
 ---
 

@@ -1,174 +1,71 @@
 # APO 自动提示优化原理
 
-treeskill 的核心是 **APO（Automatic Prompt Optimization）**——把 System Prompt 当作"权重"，通过文本梯度下降（TGD）让 prompt 自动进化。
+treeskill 有两条优化链路：
+
+- **主线**：`ASO + Kode`，优化对象是完整 skill program（`root + selection policy + 子技能`）
+- **兼容层**：`APOEngine`（`treeskill.optimizer`），保留交互式 `/bad`、`/rewrite` 习惯
+
+主线和兼容层共享同一套 `llm.judge_model` / `llm.rewrite_model` 角色抽象，所以文档中的“APO 循环”与“ASO 改造”的术语是互通的。
 
 ## 两种优化模式
 
-| 模式 | 反馈来源 | 适用场景 | 示例 |
-|------|---------|---------|------|
-| **交互式** | 人工 `/bad`、`/rewrite` | 开发调试、快速迭代 | `examples/example_optimizer.py` |
-| **全自动** | 测试集 + LLM Judge | 生产环境、批量优化 | `examples/example_fully_automatic.py` |
+| 模式 | 优化对象 | 入口 | 适用场景 |
+|------|----------|------|----------|
+| 交互式 | `SkillTree` 中的单个节点 | `python -m treeskill.main --skill ...` | 人工逐条反馈迭代 |
+| 全自动（主线） | `ASOProgram`（skill program） | `python -m treeskill` / `python -m treeskill sealqa-aso` | 数据集驱动闭环 |
 
----
+## 交互式 APO 流程（兼容）
 
-## 模式 1：交互式优化
+交互式优化沿用 `legacy-chat`，仍然按反馈→梯度→重写→评分的 APO 思路运转：
 
-用户在 CLI 中与 Agent 对话，标记不满意的回复，触发优化。
+1. 用户交互并通过 `/bad`、`/rewrite`、`/target` 记录失败与目标
+2. `APOEngine` 读取 `TraceStorage` 失败样本
+3. `LLMClient` 的 judge 角色计算文本梯度
+4. 采用文本梯度模板 + 重写模板生成候选
+5. 打分后保留 `beam_width` 个候选（默认单轨）
+6. 版本号递增并写回 `SKILL.md` 与 checkpoint
 
-```mermaid
-graph TD
-    A[加载 Skill] --> B[用户提问]
-    B --> C[Agent 回复]
-    C --> D{满意?}
+## ASO 主线（推荐）
 
-    D -->|是| B
-    D -->|否| E[标记反馈]
+主线不再只改单个 prompt，而是改程序级对象：
 
-    E --> F["/bad 原因"]
-    E --> G["/rewrite 理想回答"]
-    E --> H["/target 优化方向"]
+- `add_skill`
+- `revise_skill`
+- `drop_skill`
+- `merge_skills`
+- `adjust_selection_policy`
 
-    F --> I["触发 /optimize"]
-    G --> I
-    H --> I
+每轮 ASO 都有一个 **frontier**（候选程序池），对每个候选执行：
 
-    I --> J[TGD 优化]
-    J --> K[保存新 Prompt + Checkpoint]
-    K --> B
+- 运行失败 trace 抽取
+- 计算程序级文本梯度
+- proposal 阶段生成多个 action 集合
+- 运行验证器打分
+- 取 top-k frontier 进入下一轮
 
-    style A fill:#e1f5ff
-    style E fill:#fff9c4
-    style J fill:#fff9c4
-    style K fill:#c8e6c9
-```
+如果配置了 `auto_prune/auto_merge`，会在主循环末尾执行 `prune_program()` / `merge_program()`。
 
-**步骤**：
-1. **收集反馈** — `/bad`、`/rewrite` 标记不满意的交互
-2. **诊断失败** — 筛选低分 Trace
-3. **计算梯度** — Judge 模型分析 prompt 为何导致失败
-4. **重写 Prompt** — Judge 模型据此改写 System Prompt
-5. **保存** — 版本号 +1，写入 SKILL.md + 保存 checkpoint
+## 核心循环（文本梯度 + Beam Search）
 
----
+1. 失败样本 -> 失败 trace（TGD 训练信号）
+2. 文本梯度（`compute_program_gradient`）
+3. 生成候选动作与候选程序（`branch_factor`）
+4. 验证打分
+5. 按 `frontier_size` 保留前 N 个
+6. 重复到 `max_iterations`，得到 `best_program`
 
-## 模式 2：全自动优化
-
-基于测试集和 LLM Judge，无需人工干预，适合生产环境持续优化。
-
-```mermaid
-graph TD
-    A[初始 Prompt] --> B[准备测试集]
-    B --> C[在测试集上运行]
-
-    C --> D{LLM Judge 评估}
-    D -->|失败| E[收集失败案例]
-    D -->|全部通过| F["✅ 优化完成"]
-
-    E --> G[计算文本梯度]
-    G --> H[重写 Prompt]
-    H --> I[验证新 Prompt]
-
-    I --> J{达标?}
-    J -->|否| C
-    J -->|是| F
-
-    style A fill:#e1f5ff
-    style F fill:#c8e6c9
-    style E fill:#fff9c4
-    style G fill:#fff9c4
-    style H fill:#fff9c4
-```
-
----
-
-## 核心 APO 循环（Beam Search）
-
-无论哪种模式，内部都走 APO 引擎（对齐 Agent-Lightning）。支持两种搜索策略：
-
-### 单轨模式（beam_width=1，默认）
-
-```mermaid
-graph LR
-    A[失败 Traces] --> B[梯度模板随机选 1/3]
-    B --> C[Judge 分析失败原因]
-    C --> D[编辑模板随机选 1/2]
-    D --> E["生成 N 个候选"]
-    E --> F[并行评分]
-    F --> G{最佳候选 > 原 prompt?}
-    G -->|是| H["采纳，版本号 +1"]
-    G -->|否| I[保持原 prompt]
-
-    style A fill:#ffcdd2
-    style C fill:#fff9c4
-    style E fill:#fff9c4
-    style H fill:#c8e6c9
-```
-
-### Beam Search 模式（beam_width>1）
-
-```mermaid
-graph TD
-    A["初始 beam = [当前 prompt]"] --> B["Round 1..N"]
-    B --> C["对每个 parent prompt:"]
-    C --> D["采样 traces → 计算梯度"]
-    D --> E["生成 branch_factor 个候选"]
-    E --> F["pool = beam + 所有新候选"]
-    F --> G["并行评分，保留 top beam_width"]
-    G --> H{还有剩余轮次?}
-    H -->|是| B
-    H -->|否| I["返回历史最佳 prompt"]
-
-    style A fill:#e1f5ff
-    style G fill:#fff9c4
-    style I fill:#c8e6c9
-```
-
-**核心思想**：
-- 失败案例 = 训练信号
-- 文本梯度 = 自然语言的失败分析（3 种模板随机选择增加多样性）
-- 编辑策略 = 激进重写 / 保守单点修复（2 种模板随机选择）
-- Beam Search = 保留 top-k prompt 跨轮优化，避免局部最优
-- 免训练，仅靠 API 调用
-
----
+当 `beam_width=1` 时退化为单轨；`beam_width>1` 时保留多候选降低局部最优风险。
 
 ## 断点续跑
 
-优化过程支持中断恢复。每个节点优化完成后自动保存进度到 `.evo_resume.json`，中断后下次启动可从断点继续。
+主线 ASO 在每轮结束会持久化阶段产物到 `artifact_dir`（`demo/outputs/...`），兼容层会在 `main` 里按 `ResumeState` 落盘 `.evo_resume.json`。
 
-```mermaid
-graph TD
-    A[开始优化] --> B[创建 ResumeState]
-    B --> C[优化 node-a]
-    C --> D["保存进度 ✓ node-a"]
-    D --> E[优化 node-b]
-    E --> F["⚡ 中断"]
+重启后可从上次 frontier / 最佳版本继续，避免已完成前半程重复计算。
 
-    F --> G[下次启动]
-    G --> H{检测到 .evo_resume.json}
-    H -->|resume| I["跳过 node-a"]
-    I --> J[从 node-b 继续]
-    J --> K[全部完成]
-    K --> L[清除 resume 文件]
+## 和兼容层关系
 
-    style F fill:#ffcdd2
-    style D fill:#c8e6c9
-    style I fill:#e1f5ff
-    style L fill:#c8e6c9
-```
-
----
-
-## 优化特性
-
-| 特性 | 说明 |
-|------|------|
-| 目标导向 | `/target` 设置方向后，梯度分析和重写都以此为指导 |
-| 层级优化 | Skill 树模式下 bottom-up：先叶子后父节点 |
-| 自动拆分 | 反馈互相矛盾时建议拆分为子技能 |
-| 自动剪枝 | 低性能子节点自动移除 |
-| 策略选择 | 保守 / 激进 / 自适应三种策略 |
-| 部分优化 | 可只优化 prompt 的指令、示例、或约束部分 |
-| Beam Search | beam_width>1 时保留多个候选跨轮优化 |
-| 节点级路由 | Trace.node_path 让每个节点只用属于自己的数据优化 |
-| 断点续跑 | 中断后可从上次进度恢复 |
+- 你现在看到的 **主文档**、**推荐 demo** 先走 `python -m treeskill`（主线）
+- `python -m treeskill.main` 保留 APO 兼容入口，适合回放旧任务和对比实验
+  - `APOEngine` / `ASOOptimizer` 与 `APOEngine` 共用 `llm.judge_model`、`llm.rewrite_model` 配置，但目标对象不同：
+  - `APOEngine`：单 prompt（或单节点）
+  - `ASOOptimizer`：skill program（根 + policy + skills）

@@ -1,121 +1,53 @@
-# 核心抽象层快速开始
+# 快速开始（主线）
 
-## 安装
+## 1. 安装
 
 ```bash
-conda activate pr
 pip install -e .
 ```
 
-## 5分钟快速开始
-
-### 1. 创建Prompt
-
-```python
-from treeskill.core import TextPrompt
-
-prompt = TextPrompt(
-    content="你是一个AI助手。",
-    name="my-assistant",
-    version="v1.0",
-    target="更友好、更自然"
-)
-```
-
-### 2. 收集经验
-
-```python
-from treeskill.core import ConversationExperience, CompositeFeedback
-
-# 创建经验
-exp = ConversationExperience(
-    messages=[{"role": "user", "content": "你好"}],
-    response="你好。",
-)
-
-# 添加反馈
-exp_with_feedback = exp.attach_feedback(
-    CompositeFeedback(critique="太冷淡，不够友好")
-)
-
-print(exp_with_feedback.is_failure)  # True
-```
-
-### 3. 使用MockAdapter测试
-
-```python
-from treeskill import MockAdapter
-
-adapter = MockAdapter()
-
-# 验证Prompt
-issues = adapter.validate_prompt(prompt)
-print(f"兼容性: {len(issues)} 个问题")
-
-# 生成响应
-response = adapter.generate(prompt)
-print(f"响应: {response}")
-```
-
-### 4. 优化Prompt
-
-```python
-# 计算梯度
-gradient = adapter.compute_gradient(
-    prompt=prompt,
-    failures=[exp_with_feedback],
-    target="更友好"
-)
-
-# 应用梯度
-new_prompt = adapter.apply_gradient(prompt, gradient)
-
-print(f"版本: {prompt.version} → {new_prompt.version}")
-print(f"新内容:\n{new_prompt.content}")
-```
-
-## 运行示例
+## 2. 配置
 
 ```bash
-# 运行MockAdapter示例
-python examples/mock_adapter.py
-
-# 运行单元测试
-python tests/test_core_abstractions.py
+cp demo/example/config.yaml my-config.yaml
+# 填入你的 API key
 ```
 
-## 多模态示例
+## 3. 跑主线（推荐）
 
-```python
-from treeskill.core import MultimodalPrompt, MultimodalExperience
-
-# 创建多模态Prompt
-prompt = MultimodalPrompt(
-    text="分析这张图片中的产品缺陷",
-    images=["defect_photo.jpg"],
-    name="defect-analyzer",
-)
-
-# 创建多模态经验
-exp = MultimodalExperience(
-    input_text="这个产品有什么问题？",
-    input_images=["product.jpg"],
-    output_text="看起来有个划痕",
-    feedback=CompositeFeedback(
-        score=0.5,
-        critique="应该更具体地描述缺陷位置"
-    ),
-)
+```bash
+python -m treeskill
 ```
 
-## 下一步
+默认执行 SealQA lifecycle：  
+- 从弱 `root` 开始  
+- 通过 `search_web_lookup` 等动作生成技能  
+- evolve → prune → merge
 
-1. **实现真实适配器**：`adapters/openai.py`, `adapters/anthropic.py`
-2. **构建优化引擎**：`optimizer/engine.py`
-3. **集成到CLI**：更新`cli.py`使用新抽象层
+结果输出到：
 
-## 文档
+- `demo/outputs/sealqa-tree-lifecycle/summary.json`
+- `demo/outputs/sealqa-tree-lifecycle/iteration_*/`
 
-- [核心抽象层使用指南](docs/CORE_ABSTRACTION.md)
-- [实现总结](SUMMARY.md)
-- [架构设计](CORE_IMPLEMENTATION.md)
+## 4. 运行 ASO mini（最小前沿循环）
+
+```bash
+python -m treeskill sealqa-aso
+```
+
+## 5. 兼容模式（手工 /dataset 测试）
+
+```bash
+python -m treeskill.main --config my-config.yaml --skill demo/example
+python -m treeskill.main --config my-config.yaml --skill demo/example --dataset demo/data/paper_cls_train.jsonl --optimize
+```
+
+## 6. 常用命令
+
+```bash
+python -m treeskill.main --help
+python -m treeskill --help
+```
+
+常见 slash 命令（交互模式）：
+`/bad`、`/rewrite`、`/target`、`/optimize`、`/tree`、`/select`、`/split`、`/ckpt`、`/restore`。
