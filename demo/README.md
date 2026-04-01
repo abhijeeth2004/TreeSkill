@@ -17,6 +17,18 @@
 - `ASO` 做 skill/program 修改
 - 使用本地 `search_web/fetch_url` 抽象稳定复现 SealQA 小样本
 - 检索策略默认：`search_web_lookup` 只查本地缓存；可通过设置 `SEALQA_ASO_ENABLE_WEB_FALLBACK=1` 打开外部回退，并通过 `SEALQA_WEB_SEARCH_CMD`、`SEALQA_WEB_FETCH_CMD` 注入外部工具命令。
+ - 示例（Claude Code CLI）：
+
+```bash
+export SEALQA_ASO_ENABLE_WEB_FALLBACK=1
+export SEALQA_WEB_SEARCH_CMD='claude -p "Use web search only. Return only a JSON array with fields id,title,url,snippet for the query: {query}. Top: {top_k}." --allowed-tools WebSearch --output-format text'
+export SEALQA_WEB_FETCH_CMD='claude -p "Fetch {url} and return only the page text excerpt (no markdown)." --allowed-tools WebFetch --output-format text'
+```
+
+说明：
+
+- 命令里的 `{query}`、`{top_k}`、`{url}` 会由脚本按样本问题自动替换。
+- `--allowed-tools` 仅用于 Claude Code 本地命令行环境，失败时会自动回退到当前 cache。
 
 ```bash
 python -m treeskill
@@ -49,6 +61,19 @@ chmod +x demo/run_sealqa_demo.sh
 ./demo/run_sealqa_demo.sh            # 只跑生命周期主线
 ./demo/run_sealqa_demo.sh --aso      # 只跑 ASO 简化链路
 ./demo/run_sealqa_demo.sh --both     # 连续跑两条主线
+```
+
+默认并发和模型：
+```bash
+export KODE_ACTOR_MODEL="${KODE_ACTOR_MODEL:-MiniMax-M2.7}"
+export KODE_ACTOR_PROTOCOL="${KODE_ACTOR_PROTOCOL:-anthropic}"
+export KODE_ACTOR_BASE_URL="${KODE_ACTOR_BASE_URL:-https://api.minimaxi.com/anthropic}"
+export SEALQA_EVAL_MAX_WORKERS="${SEALQA_EVAL_MAX_WORKERS:-8}"
+export SEALQA_ASO_MAX_WORKERS="${SEALQA_ASO_MAX_WORKERS:-8}"
+export MINIMAX_API_KEY="your_minimax_key_here"
+export TREE_LLM_JUDGE_PROTOCOL="${TREE_LLM_JUDGE_PROTOCOL:-anthropic}"
+export TREE_LLM_JUDGE_MODEL="${TREE_LLM_JUDGE_MODEL:-MiniMax-M2.7}"
+export TREE_LLM_REWRITE_MODEL="${TREE_LLM_REWRITE_MODEL:-MiniMax-M2.7}"
 ```
 
 ## 归档 Demo

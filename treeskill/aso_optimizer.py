@@ -11,19 +11,23 @@ from __future__ import annotations
 
 import json
 import logging
+import hashlib
 import traceback
 import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Sequence
+from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Tuple
 
 from treeskill.aso_program import ASOProgram, ASOSkill
 from treeskill.llm import LLMClient
+from treeskill.optimizer import APOEngine
 from treeskill.schema import Feedback, Message, Trace
 from treeskill.tasks.sealqa import SealQAExample
 
 logger = logging.getLogger(__name__)
+
+_GLOBAL_FAILURE_ROUTE = "__global__"
 
 
 def _strip_thinking_blocks(text: str) -> str:
@@ -76,6 +80,7 @@ class ASOSkillAction:
     target_skill: Optional[str] = None
     merge_skills: List[str] = field(default_factory=list)
     selection_policy: Optional[str] = None
+    focus_route: Optional[str] = None
 
 
 @dataclass
@@ -110,6 +115,10 @@ class ASOOptimizer:
         max_workers: int = 1,
         auto_merge: bool = False,
         auto_prune: bool = False,
+        apo_fallback_enabled: bool = False,
+        apo_fallback_skill_limit: int = 1,
+        trajectory_mode: bool = False,
+        trajectory_focus_top_k: int = 3,
         artifact_dir: Optional[Path] = None,
     ) -> None:
         self._llm = llm
@@ -119,14 +128,21 @@ class ASOOptimizer:
         self.max_workers = max(1, max_workers)
         self.auto_merge = auto_merge
         self.auto_prune = auto_prune
+        self.apo_fallback_enabled = apo_fallback_enabled
+        self.apo_fallback_skill_limit = max(1, apo_fallback_skill_limit)
+        self.trajectory_mode = trajectory_mode
+        self.trajectory_focus_top_k = max(1, trajectory_focus_top_k)
         self.artifact_dir = Path(artifact_dir) if artifact_dir else None
+        self._apo_engine: Optional[APOEngine] = (
+            APOEngine(llm._config, llm) if apo_fallback_enabled else None
+        )
 
     def run(
         self,
         seed_program: ASOProgram,
         train_data: Sequence[SealQAExample],
         val_data: Sequence[SealQAExample],
-        runner: Callable[[ASOProgram, SealQAExample], str],
+        runner: Callable[[ASOProgram, SealQAExample], Any],
         scorer: Callable[[SealQAExample, str], float],
         *,
         start_iteration: int = 1,
@@ -171,11 +187,20 @@ class ASOOptimizer:
                 start_iteration,
                 self.max_iterations,
             )
+            return ASOResult(
+                best_program=best_program,
+                frontier=[best_program],
+                baseline_score=baseline_score,
+                final_score=float(best_program.score or 0.0),
+                history=history,
+                postprocess=postprocess,
+            )
 
         for iteration in range(start_iteration, self.max_iterations + 1):
             logger.info("ASO iteration %d/%d", iteration, self.max_iterations)
             candidates: List[ASOProgram] = list(frontier)
             iteration_actions: List[Dict[str, Any]] = []
+            iteration_signatures: set[str] = set()
 
             for parent in frontier:
                 traces = self._collect_failure_traces(parent, train_data, runner, scorer)
@@ -183,16 +208,72 @@ class ASOOptimizer:
                     logger.info("  Program %s has no train failures", parent.program_id)
                     continue
 
-                gradient = self.compute_program_gradient(parent, traces)
-                logger.info("  Gradient summary: %s", gradient[:160].replace("\n", " "))
+                focus_groups = self._group_traces_by_route(parent, traces)
+                focus_order = sorted(
+                    focus_groups.items(),
+                    key=lambda item: len(item[1]),
+                    reverse=True,
+                )
+                for focus_route, focus_traces in focus_order[: self.trajectory_focus_top_k]:
+                    if self.trajectory_mode and focus_route != _GLOBAL_FAILURE_ROUTE and len(focus_traces) > 0:
+                        route_note = f" (focus_route={focus_route}, failures={len(focus_traces)})"
+                    else:
+                        route_note = ""
+                    gradient = self.compute_program_gradient(
+                        parent,
+                        focus_traces,
+                        focus_route=focus_route,
+                    )
+                    logger.info(
+                        "  Program %s focus%s gradient=%s",
+                        parent.program_id,
+                        route_note,
+                        str(gradient[:120]).replace("\n", " "),
+                    )
 
-                for _ in range(self.branch_factor):
-                    actions = self.propose_actions(parent, gradient, traces)
-                    iteration_actions.extend([action.__dict__ for action in actions])
-                    if not actions:
-                        continue
-                    candidate = self.apply_actions(parent, actions)
-                    candidates.append(candidate)
+                    for _ in range(self.branch_factor):
+                        actions = self.propose_actions(
+                            parent,
+                            gradient,
+                            focus_traces,
+                            focus_route=focus_route,
+                        )
+                        if not actions and self.apo_fallback_enabled:
+                            fallback_action = self.propose_apo_action(
+                                parent,
+                                gradient,
+                                focus_traces,
+                                focus_route=focus_route,
+                            )
+                            if fallback_action is not None:
+                                actions = [fallback_action]
+
+                        if not actions:
+                            continue
+
+                        iteration_actions.extend([action.__dict__ for action in actions])
+                        actions = self._dedupe_actions(actions)
+                        if not actions:
+                            continue
+                        candidate_signature = self._candidate_signature(
+                            parent,
+                            actions,
+                            focus_route,
+                        )
+                        if candidate_signature in iteration_signatures:
+                            logger.debug(
+                                "  Skip duplicate candidate for parent=%s focus=%s",
+                                parent.program_id,
+                                focus_route,
+                            )
+                            continue
+                        iteration_signatures.add(candidate_signature)
+                        candidate = self.apply_actions(parent, actions)
+                        candidate.metadata.setdefault("focus_routes", [])
+                        for action in actions:
+                            if action.focus_route:
+                                candidate.metadata["focus_routes"].append(action.focus_route)
+                        candidates.append(candidate)
 
             scored_candidates: List[ASOProgram] = []
             for candidate in candidates:
@@ -269,7 +350,15 @@ class ASOOptimizer:
             encoding="utf-8",
         )
 
-    def compute_program_gradient(self, program: ASOProgram, traces: List[Trace]) -> str:
+    def compute_program_gradient(
+        self,
+        program: ASOProgram,
+        traces: List[Trace],
+        *,
+        focus_route: Optional[str] = None,
+    ) -> str:
+        if focus_route == _GLOBAL_FAILURE_ROUTE or focus_route is None:
+            focus_route = None
         failure_block = "\n".join(
             (
                 f"- Question: {trace.inputs[-1].content}\n"
@@ -277,6 +366,11 @@ class ASOOptimizer:
                 f"  Critique: {trace.feedback.critique if trace.feedback else 'n/a'}"
             )
             for trace in traces[:8]
+        )
+        route_hint = (
+            f"Focus this optimization on route `{focus_route}`."
+            if focus_route
+            else "No explicit route hint; treat failures holistically."
         )
         messages = [
             Message(
@@ -293,6 +387,7 @@ class ASOOptimizer:
                     f"Root prompt:\n{program.root_prompt}\n\n"
                     f"Selection policy:\n{program.selection_policy}\n\n"
                     f"Current skills:\n{self._render_skill_inventory(program)}\n\n"
+                    f"{route_hint}\n\n"
                     f"Failures:\n{failure_block}"
                 ),
             ),
@@ -305,7 +400,15 @@ class ASOOptimizer:
         program: ASOProgram,
         gradient: str,
         traces: List[Trace],
+        *,
+        focus_route: Optional[str] = None,
     ) -> List[ASOSkillAction]:
+        focus_route = None if focus_route == _GLOBAL_FAILURE_ROUTE else focus_route
+        focus_note = (
+            f"\n\nRoute focus: `{focus_route}`. Prefer editing skills under this route."
+            if focus_route
+            else ""
+        )
         messages = [
             Message(
                 role="system",
@@ -333,6 +436,7 @@ class ASOOptimizer:
                     f"Selection policy:\n{program.selection_policy}\n\n"
                     f"Gradient:\n{gradient}\n\n"
                     f"Representative failure:\n{traces[0].feedback.critique if traces and traces[0].feedback else 'n/a'}"
+                    f"{focus_note}"
                 ),
             ),
         ]
@@ -348,9 +452,18 @@ class ASOOptimizer:
         for item in parsed:
             if not isinstance(item, dict) or "action" not in item:
                 continue
+            action = str(item.get("action", "")).strip()
+            if action not in {
+                "add_skill",
+                "revise_skill",
+                "drop_skill",
+                "merge_skills",
+                "adjust_selection_policy",
+            }:
+                continue
             actions.append(
                 ASOSkillAction(
-                    action=str(item.get("action", "")).strip(),
+                    action=action,
                     rationale=str(item.get("rationale", "")).strip(),
                     skill_name=item.get("skill_name"),
                     description=item.get("description"),
@@ -358,9 +471,53 @@ class ASOOptimizer:
                     target_skill=item.get("target_skill"),
                     merge_skills=list(item.get("merge_skills", []) or []),
                     selection_policy=item.get("selection_policy"),
+                    focus_route=focus_route,
                 )
             )
-        return actions
+        return self._dedupe_actions(actions)
+
+    @staticmethod
+    def _action_signature(action: ASOSkillAction) -> str:
+        payload = {
+            "action": action.action,
+            "target_skill": action.target_skill or "",
+            "skill_name": action.skill_name or "",
+            "description": action.description or "",
+            "selection_policy": action.selection_policy or "",
+            "focus_route": action.focus_route or "",
+            "merge_skills": sorted(action.merge_skills),
+            "skill_prompt_hash": hashlib.sha1((action.skill_prompt or "").encode("utf-8")).hexdigest(),
+        }
+        return hashlib.sha256(
+            json.dumps(payload, sort_keys=True, ensure_ascii=False).encode("utf-8")
+        ).hexdigest()
+
+    @staticmethod
+    def _dedupe_actions(actions: Iterable[ASOSkillAction]) -> List[ASOSkillAction]:
+        seen: set[str] = set()
+        deduped: List[ASOSkillAction] = []
+        for action in actions:
+            signature = ASOOptimizer._action_signature(action)
+            if signature in seen:
+                continue
+            seen.add(signature)
+            deduped.append(action)
+        return deduped
+
+    @staticmethod
+    def _candidate_signature(
+        parent: ASOProgram,
+        actions: Sequence[ASOSkillAction],
+        focus_route: Optional[str],
+    ) -> str:
+        payload = {
+            "parent_id": parent.program_id,
+            "focus_route": focus_route or "",
+            "action_signatures": [ASOOptimizer._action_signature(action) for action in actions],
+        }
+        return hashlib.sha256(
+            json.dumps(payload, sort_keys=True, ensure_ascii=False).encode("utf-8")
+        ).hexdigest()
 
     def apply_actions(self, parent: ASOProgram, actions: List[ASOSkillAction]) -> ASOProgram:
         candidate = parent.bump_version()
@@ -371,13 +528,18 @@ class ASOOptimizer:
                 prompt=skill.prompt,
                 version=skill.version,
                 tags=list(skill.tags),
+                path=skill.path,
+                parent_skill=skill.parent_skill,
             )
             for skill in parent.skills
         ]
         candidate.metadata.setdefault("applied_actions", [])
+        candidate.metadata["trajectory_mode"] = self.trajectory_mode
 
         for action in actions:
             candidate.metadata["applied_actions"].append(action.__dict__)
+            if action.focus_route:
+                candidate.metadata["applied_actions"][-1]["focus_route"] = action.focus_route
             if action.action == "add_skill" and action.skill_name and action.skill_prompt:
                 if any(skill.name == action.skill_name for skill in candidate.skills):
                     continue
@@ -386,6 +548,7 @@ class ASOOptimizer:
                         name=action.skill_name,
                         description=action.description or "",
                         prompt=action.skill_prompt,
+                        path=(action.focus_route or ""),
                         tags=["generated"],
                     )
                 )
@@ -396,6 +559,8 @@ class ASOOptimizer:
                         if action.description:
                             skill.description = action.description
                         skill.version = _increment_version(skill.version)
+                        if action.focus_route and not skill.path:
+                            skill.path = action.focus_route
                         break
             elif action.action == "drop_skill" and action.target_skill:
                 candidate.skills = [
@@ -410,6 +575,7 @@ class ASOOptimizer:
                         name=action.skill_name,
                         description=action.description or "",
                         prompt=action.skill_prompt,
+                        path=(action.focus_route or ""),
                         tags=["merged"],
                     )
                 )
@@ -422,7 +588,7 @@ class ASOOptimizer:
         self,
         program: ASOProgram,
         val_data: Sequence[SealQAExample],
-        runner: Callable[[ASOProgram, SealQAExample], str],
+        runner: Callable[[ASOProgram, SealQAExample], Any],
         scorer: Callable[[SealQAExample, str], float],
     ) -> tuple[ASOProgram, Optional[Dict[str, Any]]]:
         current = program
@@ -465,7 +631,7 @@ class ASOOptimizer:
         self,
         program: ASOProgram,
         val_data: Sequence[SealQAExample],
-        runner: Callable[[ASOProgram, SealQAExample], str],
+        runner: Callable[[ASOProgram, SealQAExample], Any],
         scorer: Callable[[SealQAExample, str], float],
     ) -> tuple[ASOProgram, Optional[Dict[str, Any]]]:
         merge_action = self._propose_merge_action(program)
@@ -494,6 +660,112 @@ class ASOOptimizer:
             "merged_skill": merge_action.skill_name,
             "skills": [skill.name for skill in candidate.skills],
         }
+
+    def propose_apo_action(
+        self,
+        program: ASOProgram,
+        gradient: str,
+        traces: List[Trace],
+        focus_route: Optional[str] = None,
+    ) -> Optional[ASOSkillAction]:
+        if self._apo_engine is None or not program.skills:
+            return None
+        if not traces:
+            return None
+
+        target = self._select_skill_for_apo(program, gradient, traces, focus_route=focus_route)
+        if target is None:
+            return None
+
+        skill_payload = target.to_skill()
+        skill_payload.target = (
+            f"Improve this skill for the current program based on failure traces. "
+            f"Context: {program.selection_policy}"
+        )
+
+        optimized = self._apo_engine.optimize(
+            skill_payload,
+            traces[-min(len(traces), self.apo_fallback_skill_limit) :],
+        )
+        if optimized.system_prompt == target.prompt:
+            return None
+        return ASOSkillAction(
+            action="revise_skill",
+            rationale=(
+                f"Fallback APO rewrite from ASO textual gradient, targeting skill "
+                f"'{target.name}'."
+            ),
+            target_skill=target.name,
+            description=target.description,
+            skill_prompt=optimized.system_prompt,
+            skill_name=target.name,
+            focus_route=focus_route,
+        )
+
+    def _select_skill_for_apo(
+        self,
+        program: ASOProgram,
+        gradient: str,
+        traces: List[Trace],
+        focus_route: Optional[str] = None,
+    ) -> Optional[ASOSkill]:
+        if not program.skills:
+            return None
+        focus_route = None if focus_route == _GLOBAL_FAILURE_ROUTE else focus_route
+
+        candidates = program.skills
+        if focus_route:
+            focus_candidates = [
+                skill
+                for skill in program.skills
+                if self._skill_route_matches(skill, focus_route)
+            ]
+            candidates = focus_candidates or program.skills
+
+        if traces:
+            critique_text = " ".join(
+                str(trace.feedback.critique) for trace in traces if trace.feedback and trace.feedback.critique
+            ).lower()
+            sample_topic = str(traces[0].inputs[-1].content).lower() if traces and traces[0].inputs else ""
+            fallback_text = f"{gradient} {critique_text} {sample_topic}"
+        else:
+            fallback_text = gradient
+
+        tokens = {
+            token.strip(",:;\"'`()[]{}")
+            for token in re.findall(r"[A-Za-z0-9_./-]+", fallback_text.lower())
+        }
+        if not candidates:
+            return None
+        if not tokens:
+            return candidates[0]
+
+        best_skill = candidates[0]
+        best_score = -1.0
+        for skill in candidates:
+            content = f"{skill.name} {skill.description} {skill.prompt}".lower()
+            match_score = sum(1 for token in tokens if token and token in content)
+            if match_score > best_score:
+                best_score = match_score
+                best_skill = skill
+        return best_skill
+
+    @staticmethod
+    def _normalized_route(route: Optional[str]) -> str:
+        if not route:
+            return ""
+        return route.strip().strip(".")
+
+    @staticmethod
+    def _skill_route_matches(skill: ASOSkill, focus_route: str) -> bool:
+        normalized = ASOOptimizer._normalized_route(focus_route)
+        if not normalized:
+            return True
+        route = (skill.path or "").strip().strip(".")
+        if not route:
+            return False
+        return route == normalized or route.startswith(f"{normalized}.") or normalized.startswith(f"{route}.")
+
 
     def _propose_merge_action(self, program: ASOProgram) -> Optional[ASOSkillAction]:
         candidates = self._rank_merge_pairs(program)
@@ -570,7 +842,7 @@ class ASOOptimizer:
         self,
         program: ASOProgram,
         train_data: Sequence[SealQAExample],
-        runner: Callable[[ASOProgram, SealQAExample], str],
+        runner: Callable[[ASOProgram, SealQAExample], Any],
         scorer: Callable[[SealQAExample, str], float],
     ) -> List[Trace]:
         traces: List[Trace] = []
@@ -595,11 +867,112 @@ class ASOOptimizer:
                     logger.warning("Failure trace worker error:\n%s", traceback.format_exc())
         return traces
 
+    def _group_traces_by_route(
+        self,
+        program: ASOProgram,
+        traces: Sequence[Trace],
+    ) -> Dict[str, List[Trace]]:
+        if not self.trajectory_mode:
+            return {_GLOBAL_FAILURE_ROUTE: list(traces)}
+
+        groups: Dict[str, List[Trace]] = {}
+        for trace in traces:
+            route = self._infer_trace_route(program, trace)
+            groups.setdefault(route, []).append(trace)
+        return groups
+
+    def _infer_trace_route(self, program: ASOProgram, trace: Trace) -> str:
+        if trace.node_path:
+            return trace.node_path
+        metadata = trace.metadata if hasattr(trace, "metadata") else {}
+        if isinstance(metadata, dict):
+            route = metadata.get("route") or metadata.get("focus_route") or metadata.get("path")
+            if isinstance(route, str) and route.strip():
+                return route.strip()
+            selected_skill = metadata.get("selected_skill") or metadata.get("skill_name")
+            if isinstance(selected_skill, str) and selected_skill.strip():
+                route_skill = self._infer_focus_skill(program, selected_skill)
+                if route_skill:
+                    return self._route_key(route_skill)
+
+        user_text = str(trace.inputs[-1].content) if trace.inputs else ""
+        selected_skill = self._infer_failure_focus_skill(program, trace, user_text)
+        if selected_skill is not None:
+            return self._route_key(selected_skill)
+        return _GLOBAL_FAILURE_ROUTE
+
+    def _infer_failure_focus_skill(
+        self,
+        program: ASOProgram,
+        trace: Trace,
+        user_text: str,
+    ) -> Optional[ASOSkill]:
+        candidate_text = []
+        candidate_text.append(user_text or "")
+        if trace.feedback and trace.feedback.critique:
+            candidate_text.append(str(trace.feedback.critique))
+        if isinstance(trace.metadata, dict):
+            candidate_text.append(str(trace.metadata.get("topic", "")))
+            candidate_text.append(str(trace.metadata.get("question", "")))
+        fallback_text = " ".join(part for part in candidate_text if part).strip()
+        return self._infer_focus_skill(program, fallback_text)
+
+    def _infer_focus_skill(self, program: ASOProgram, text: str) -> Optional[ASOSkill]:
+        if not program.skills:
+            return None
+        candidate_text = str(text or "").strip().lower()
+        tokens = {
+            token.strip(",:;\"'`()[]{}")
+            for token in re.findall(r"[A-Za-z0-9_./-]+", candidate_text.lower())
+        }
+        if not tokens:
+            return program.skills[0]
+
+        best_skill = program.skills[0]
+        best_score = -1.0
+        for skill in program.skills:
+            content = f"{skill.name} {skill.description} {skill.prompt} {skill.path}".lower()
+            match_score = sum(1 for token in tokens if token and token in content)
+            if match_score > best_score:
+                best_score = match_score
+                best_skill = skill
+        return best_skill
+
+    @staticmethod
+    def _route_key(skill: ASOSkill) -> str:
+        return ASOOptimizer._normalized_route(skill.path) or ASOOptimizer._normalize_name(skill.name)
+
+    @staticmethod
+    def _normalize_name(name: str) -> str:
+        return re.sub(r"[^a-zA-Z0-9_.-]", "_", name).strip("._-").lower()
+
+    def _collect_sample_metadata(
+        self,
+        sample: SealQAExample,
+        prediction: str,
+        route_metadata: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        meta: Dict[str, Any] = {}
+        if sample.topic:
+            meta["topic"] = sample.topic
+        if sample.metadata:
+            meta.update(sample.metadata)
+        if sample.question:
+            meta["question"] = sample.question
+        if prediction:
+            meta["prediction"] = prediction[:512]
+        if route_metadata:
+            for key, value in route_metadata.items():
+                if isinstance(key, str) and key.strip() and value is not None:
+                    meta[key.strip()] = value
+        meta.setdefault("source", "aso")
+        return meta
+
     def _evaluate(
         self,
         program: ASOProgram,
         data: Sequence[SealQAExample],
-        runner: Callable[[ASOProgram, SealQAExample], str],
+        runner: Callable[[ASOProgram, SealQAExample], Any],
         scorer: Callable[[SealQAExample, str], float],
     ) -> float:
         if not data:
@@ -629,30 +1002,33 @@ class ASOOptimizer:
     def _score_value(
         program: ASOProgram,
         sample: SealQAExample,
-        runner: Callable[[ASOProgram, SealQAExample], str],
+        runner: Callable[[ASOProgram, SealQAExample], Any],
         scorer: Callable[[SealQAExample, str], float],
     ) -> float:
         try:
-            prediction = runner(program, sample)
+            prediction, _route_metadata = ASOOptimizer._run_program(program, sample, runner)
             return scorer(sample, prediction)
         except Exception:
             logger.warning("Sample scoring failed:\n%s", traceback.format_exc())
             return 0.0
 
-    @staticmethod
     def _score_sample(
+        self,
         program: ASOProgram,
         sample: SealQAExample,
-        runner: Callable[[ASOProgram, SealQAExample], str],
+        runner: Callable[[ASOProgram, SealQAExample], Any],
         scorer: Callable[[SealQAExample, str], float],
     ) -> Optional[Trace]:
         try:
-            prediction = runner(program, sample)
+            prediction, route_metadata = self._run_program(program, sample, runner)
             score = scorer(sample, prediction)
         except Exception:
             logger.warning("Failure trace scoring failed:\n%s", traceback.format_exc())
             prediction = ""
             score = 0.0
+            route_metadata: Dict[str, Any] = {}
+        # Keep trace-level metadata lightweight; used by route inference in trajectory mode.
+        route_metadata = self._collect_sample_metadata(sample, prediction, route_metadata)
         if score >= 1.0:
             return None
         return Trace(
@@ -667,7 +1043,60 @@ class ASOOptimizer:
                 ),
                 correction=sample.answer,
             ),
+            metadata=route_metadata,
         )
+
+    @staticmethod
+    def _run_program(
+        program: ASOProgram,
+        sample: SealQAExample,
+        runner: Callable[[ASOProgram, SealQAExample], Any],
+    ) -> Tuple[str, Dict[str, Any]]:
+        result = runner(program, sample)
+        return ASOOptimizer._normalize_runner_output(result)
+
+    @staticmethod
+    def _normalize_runner_output(result: Any) -> Tuple[str, Dict[str, Any]]:
+        """Normalize heterogeneous runner outputs to `(prediction, metadata)`."""
+        if result is None:
+            return "", {}
+
+        if isinstance(result, (tuple, list)):
+            if not result:
+                return "", {}
+            prediction, metadata = ASOOptimizer._normalize_runner_output(result[0])
+            if len(result) > 1 and isinstance(result[1], dict):
+                if metadata:
+                    merged = dict(metadata)
+                    merged.update(result[1])
+                    metadata = merged
+                else:
+                    metadata = result[1]
+            return prediction, metadata
+
+        if isinstance(result, dict):
+            prediction = result.get("result", "")
+            if prediction in (None, ""):
+                prediction = result.get("output", "")
+            if prediction in (None, ""):
+                prediction = result.get("answer", "")
+            if prediction is None:
+                prediction = ""
+
+            metadata: Dict[str, Any] = {}
+            nested_metadata = result.get("metadata")
+            if isinstance(nested_metadata, dict):
+                metadata.update(nested_metadata)
+
+            for key, value in result.items():
+                if key in {"result", "output", "answer", "metadata"}:
+                    continue
+                if isinstance(key, str):
+                    metadata[key] = value
+
+            return str(prediction).strip(), metadata
+
+        return str(result).strip() if result is not None else "", {}
 
     @staticmethod
     def _render_skill_inventory(program: ASOProgram) -> str:

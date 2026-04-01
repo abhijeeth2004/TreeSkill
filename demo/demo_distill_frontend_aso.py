@@ -111,6 +111,8 @@ EVAL_WORKERS = max(1, int(os.getenv("FRONTEND_EVAL_WORKERS", "4")))
 ASO_WORKERS = max(1, int(os.getenv("FRONTEND_ASO_WORKERS", "4")))
 AUTO_MERGE = os.getenv("FRONTEND_ASO_AUTO_MERGE", "1") != "0"
 AUTO_PRUNE = os.getenv("FRONTEND_ASO_AUTO_PRUNE", "1") != "0"
+TRAJECTORY_MODE = os.getenv("FRONTEND_ASO_TRAJECTORY_MODE", "1") == "1"
+TRAJECTORY_FOCUS_TOP_K = max(1, int(os.getenv("FRONTEND_ASO_TRAJECTORY_FOCUS_TOP_K", "3")))
 KODE_TIMEOUT_SECONDS = max(30, int(os.getenv("FRONTEND_KODE_TIMEOUT", "180")))
 
 ROOT_PROMPT = (
@@ -689,6 +691,8 @@ def main() -> None:
         max_workers=ASO_WORKERS,
         auto_merge=AUTO_MERGE,
         auto_prune=AUTO_PRUNE,
+        trajectory_mode=TRAJECTORY_MODE,
+        trajectory_focus_top_k=TRAJECTORY_FOCUS_TOP_K,
         artifact_dir=OUTPUT_DIR,
     )
 

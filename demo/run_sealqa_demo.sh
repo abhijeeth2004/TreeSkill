@@ -9,6 +9,10 @@ export SEALQA_TRAIN_SIZE="${SEALQA_TRAIN_SIZE:-6}"
 export SEALQA_VAL_SIZE="${SEALQA_VAL_SIZE:-2}"
 export SEALQA_TEST_SIZE="${SEALQA_TEST_SIZE:-2}"
 export SEALQA_ASO_MAX_ITERATIONS="${SEALQA_ASO_MAX_ITERATIONS:-2}"
+export SEALQA_EVAL_MAX_WORKERS="${SEALQA_EVAL_MAX_WORKERS:-8}"
+export SEALQA_ASO_MAX_WORKERS="${SEALQA_ASO_MAX_WORKERS:-8}"
+export SEALQA_ASO_TRAJECTORY_MODE="${SEALQA_ASO_TRAJECTORY_MODE:-1}"
+export SEALQA_ASO_TRAJECTORY_FOCUS_TOP_K="${SEALQA_ASO_TRAJECTORY_FOCUS_TOP_K:-3}"
 
 run_lifecycle() {
   echo "Running SealQA lifecycle demo (root -> generate -> evolve -> prune -> merge)"
@@ -37,7 +41,7 @@ case "${1:-}" in
   *)
     echo "Usage: $0 [--lifecycle|--aso|--both]"
     echo "Default is --lifecycle."
-    echo "Environment variables: SEALQA_TRAIN_SIZE (default 6), SEALQA_VAL_SIZE (default 2), SEALQA_TEST_SIZE (default 2), SEALQA_ASO_MAX_ITERATIONS (default 2)."
+    echo "Environment variables: SEALQA_TRAIN_SIZE (default 6), SEALQA_VAL_SIZE (default 2), SEALQA_TEST_SIZE (default 2), SEALQA_ASO_MAX_ITERATIONS (default 2), SEALQA_ASO_TRAJECTORY_MODE (default 1), SEALQA_ASO_TRAJECTORY_FOCUS_TOP_K (default 3)."
     exit 1
     ;;
 esac

@@ -17,8 +17,10 @@ import os
 import ast
 import random
 import re
+import hashlib
+import importlib.util
 import subprocess
-import textwrap
+import signal
 import time
 import traceback
 import shutil
@@ -38,10 +40,19 @@ from treeskill.llm import LLMClient
 from treeskill.schema import Message
 from treeskill.tasks.sealqa import SealQAExample, SealQATaskAdapter
 
+_TOOLKIT_PATH = Path(__file__).resolve().parent / "tools" / "search_toolkit.py"
+_TOOLKIT_SPEC = importlib.util.spec_from_file_location("demo_search_toolkit", _TOOLKIT_PATH)
+if _TOOLKIT_SPEC is None or _TOOLKIT_SPEC.loader is None:
+    raise RuntimeError(f"Cannot load search toolkit: {_TOOLKIT_PATH}")
+_TOOLKIT_MODULE = importlib.util.module_from_spec(_TOOLKIT_SPEC)
+_TOOLKIT_SPEC.loader.exec_module(_TOOLKIT_MODULE)
+build_search_web_script = _TOOLKIT_MODULE.build_search_web_script
+build_fetch_script = _TOOLKIT_MODULE.build_fetch_script
+
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
 
-OUTPUT_DIR = Path("demo/outputs/sealqa-aso-mini")
+OUTPUT_DIR = Path(os.getenv("SEALQA_OUTPUT_DIR", "demo/outputs/sealqa-aso-mini"))
 WORKSPACES_DIR = OUTPUT_DIR / "workspaces"
 SUMMARY_PATH = OUTPUT_DIR / "summary.json"
 ERROR_PATH = OUTPUT_DIR / "error.json"
@@ -51,49 +62,73 @@ FORCE_NEW = os.getenv("SEALQA_ASO_FORCE_NEW", "0") == "1"
 RESUME_ENABLED = os.getenv("SEALQA_ASO_RESUME", "1") != "0"
 
 DATA_PATH = os.getenv("SEALQA_PATH", "/root/sealqa/seal-0.parquet")
-KODE_MODEL = os.getenv("KODE_ACTOR_MODEL", "MiniMax-M2.7")
-KODE_ACTOR_PROTOCOL = os.getenv(
-    "KODE_ACTOR_PROTOCOL",
-    "anthropic" if (os.getenv("MINIMAX_API_KEY") or os.getenv("KODE_ACTOR_MODEL", "").lower().startswith("minimax")) else os.getenv("TREE_LLM_PROTOCOL", "openai"),
+_RAW_KODE_MODEL = os.getenv("KODE_ACTOR_MODEL", "MiniMax-M2.7")
+KODE_TIMEOUT = max(1, int(os.getenv("SEALQA_KODE_TIMEOUT", "120")))
+KODE_ACTOR_PROTOCOL = os.getenv("KODE_ACTOR_PROTOCOL", "anthropic")
+KODE_MODEL = (
+    _RAW_KODE_MODEL
+    if (KODE_ACTOR_PROTOCOL != "anthropic" or "minimax" in _RAW_KODE_MODEL.lower())
+    else "MiniMax-M2.7"
 )
 KODE_ACTOR_BASE_URL = os.getenv(
     "KODE_ACTOR_BASE_URL",
     "https://api.minimaxi.com/anthropic" if KODE_ACTOR_PROTOCOL == "anthropic" else os.getenv("TREE_LLM_BASE_URL", "https://oneapi.liuyanxing.site:8443/v1"),
 )
-KODE_ACTOR_API_KEY = (
-    os.getenv("KODE_ACTOR_API_KEY")
-    or os.getenv("MINIMAX_API_KEY")
-    or os.getenv("TREE_LLM_API_KEY")
-    or ""
-)
-EVAL_MAX_WORKERS = max(1, int(os.getenv("SEALQA_EVAL_MAX_WORKERS", "2")))
-ASO_MAX_WORKERS = max(1, int(os.getenv("SEALQA_ASO_MAX_WORKERS", "2")))
+if KODE_ACTOR_PROTOCOL == "anthropic":
+    KODE_ACTOR_API_KEY = (
+        os.getenv("KODE_ACTOR_API_KEY")
+        or os.getenv("MINIMAX_API_KEY")
+        or ""
+    )
+else:
+    KODE_ACTOR_API_KEY = (
+        os.getenv("KODE_ACTOR_API_KEY")
+        or os.getenv("TREE_LLM_API_KEY")
+        or ""
+    )
+EVAL_MAX_WORKERS = max(1, int(os.getenv("SEALQA_EVAL_MAX_WORKERS", "8")))
+ASO_MAX_WORKERS = max(1, int(os.getenv("SEALQA_ASO_MAX_WORKERS", "8")))
 MAX_ITERATIONS = max(1, int(os.getenv("SEALQA_ASO_MAX_ITERATIONS", "2")))
 TRAIN_SIZE = max(1, int(os.getenv("SEALQA_TRAIN_SIZE", "4")))
 VAL_SIZE = max(1, int(os.getenv("SEALQA_VAL_SIZE", "2")))
 TEST_SIZE = max(1, int(os.getenv("SEALQA_TEST_SIZE", "4")))
 AUTO_MERGE = os.getenv("SEALQA_ASO_AUTO_MERGE", "1") != "0"
 AUTO_PRUNE = os.getenv("SEALQA_ASO_AUTO_PRUNE", "1") != "0"
+HYBRID_APO = os.getenv("SEALQA_ASO_USE_HYBRID_APO", "0") == "1"
+HYBRID_APO_SKILL_LIMIT = max(1, int(os.getenv("SEALQA_ASO_HYBRID_APO_SKILL_LIMIT", "1")))
+TRAJECTORY_MODE = os.getenv("SEALQA_ASO_TRAJECTORY_MODE", "1") == "1"
+TRAJECTORY_FOCUS_TOP_K = max(1, int(os.getenv("SEALQA_ASO_TRAJECTORY_FOCUS_TOP_K", "3")))
 ENABLE_WEB_FALLBACK = os.getenv("SEALQA_ASO_ENABLE_WEB_FALLBACK", "0") == "1"
 WEB_FALLBACK_SEARCH_CMD = os.getenv("SEALQA_WEB_SEARCH_CMD", "").strip()
 WEB_FALLBACK_FETCH_CMD = os.getenv("SEALQA_WEB_FETCH_CMD", "").strip()
 WORKSPACE_SEARCH_CACHE_LIMIT = max(1, int(os.getenv("SEALQA_WEB_CACHE_LIMIT", "200")))
-_DEFAULT_JUDGE_PROTOCOL = "anthropic" if os.getenv("MINIMAX_API_KEY") else "openai"
+_DEFAULT_JUDGE_PROTOCOL = "anthropic"
 JUDGE_PROTOCOL = os.getenv("TREE_LLM_JUDGE_PROTOCOL", _DEFAULT_JUDGE_PROTOCOL)
 JUDGE_BASE_URL = os.getenv("TREE_LLM_JUDGE_BASE_URL") or (
     "https://api.minimaxi.com/anthropic"
     if JUDGE_PROTOCOL == "anthropic"
     else os.getenv("TREE_LLM_BASE_URL", "https://oneapi.liuyanxing.site:8443/v1")
 )
-JUDGE_MODEL = os.getenv(
-    "TREE_LLM_JUDGE_MODEL",
-    "MiniMax-M2.7" if JUDGE_PROTOCOL == "anthropic" else "bailian/glm-5",
-)
-JUDGE_API_KEY = (
-    os.getenv("TREE_LLM_JUDGE_API_KEY")
-    or (os.getenv("MINIMAX_API_KEY") if JUDGE_PROTOCOL == "anthropic" else None)
-    or os.getenv("TREE_LLM_API_KEY")
-)
+_RAW_JUDGE_MODEL = os.getenv("TREE_LLM_JUDGE_MODEL")
+if JUDGE_PROTOCOL == "anthropic":
+    if _RAW_JUDGE_MODEL and "minimax" in _RAW_JUDGE_MODEL.lower():
+        JUDGE_MODEL = _RAW_JUDGE_MODEL
+    else:
+        JUDGE_MODEL = "MiniMax-M2.7"
+else:
+    JUDGE_MODEL = _RAW_JUDGE_MODEL or "bailian/glm-5"
+if JUDGE_PROTOCOL == "anthropic":
+    JUDGE_API_KEY = (
+        os.getenv("TREE_LLM_JUDGE_API_KEY")
+        or os.getenv("MINIMAX_API_KEY")
+        or ""
+    )
+else:
+    JUDGE_API_KEY = (
+        os.getenv("TREE_LLM_JUDGE_API_KEY")
+        or os.getenv("TREE_LLM_API_KEY")
+        or ""
+    )
 JUDGE_EXTRA_BODY = {"thinking": {"type": "disabled"}} if JUDGE_PROTOCOL == "anthropic" else None
 REWRITE_PROTOCOL = os.getenv("TREE_LLM_REWRITE_PROTOCOL", JUDGE_PROTOCOL)
 REWRITE_BASE_URL = os.getenv("TREE_LLM_REWRITE_BASE_URL", JUDGE_BASE_URL)
@@ -135,6 +170,109 @@ def _safe_to_list(value: Any) -> list[str]:
     for part in re.split(r"[;,]", text):
         values.extend(item.strip() for item in part.split() if item.strip())
     return values
+
+
+def _stable_sample_workspace_id(sample: SealQAExample, label: str) -> str:
+    topic = (sample.topic or "").strip().replace("/", "_")
+    question = (sample.question or "").strip().replace("\n", " ")
+    seed = f"{label}|{topic}|{question}"
+    return hashlib.sha1(seed.encode("utf-8")).hexdigest()[:16]
+
+
+def _normalize_metadata_value(value: Any) -> Any:
+    if value is None:
+        return None
+    if isinstance(value, (str, int, float, bool)):
+        return value
+    if isinstance(value, (list, tuple, set)):
+        return [str(item).strip() for item in value if str(item).strip()]
+    if isinstance(value, dict):
+        return {
+            str(key).strip(): _normalize_metadata_value(val)
+            for key, val in value.items()
+            if str(key).strip()
+        }
+    return str(value)
+
+
+def _extract_kode_payload(raw: str) -> tuple[str, Dict[str, Any]]:
+    if not raw:
+        return "", {}
+
+    def _is_metadata_key(key: str) -> bool:
+        return bool(key) and key.strip() not in {"result", "output", "answer", "metadata"}
+
+    def _from_parsed(payload: Any) -> tuple[str, Dict[str, Any]]:
+        if payload is None:
+            return "", {}
+        if isinstance(payload, (list, tuple)):
+            if not payload:
+                return "", {}
+            first = payload[0]
+            return _from_parsed(first)
+        if isinstance(payload, dict):
+            if not payload:
+                return "", {}
+            prediction = payload.get("result", "")
+            if prediction in (None, ""):
+                prediction = payload.get("output", "")
+            if prediction in (None, ""):
+                prediction = payload.get("answer", "")
+            metadata = {}
+            nested_metadata = payload.get("metadata", {})
+            if isinstance(nested_metadata, dict):
+                for key, value in nested_metadata.items():
+                    metadata[str(key).strip()] = _normalize_metadata_value(value)
+            for key, value in payload.items():
+                if _is_metadata_key(str(key)):
+                    metadata[str(key).strip()] = _normalize_metadata_value(value)
+            if prediction is None:
+                prediction = ""
+            return str(prediction).strip(), metadata
+        return str(payload).strip(), {}
+
+    parsed: Any | None = None
+    raw_text = raw.strip()
+    try:
+        parsed = json.loads(raw_text)
+    except Exception:
+        pass
+
+    if parsed is None:
+        fence_match = re.search(
+            r"```(?:json)?\s*(\[[\s\S]*?\]|\{[\s\S]*?\})\s*```",
+            raw_text,
+            flags=re.IGNORECASE,
+        )
+        if fence_match:
+            try:
+                parsed = json.loads(fence_match.group(1))
+            except Exception:
+                parsed = None
+
+    if parsed is None:
+        for marker in ("{", "["):
+            index = raw_text.find(marker)
+            if index == -1:
+                continue
+            candidate = raw_text[index:]
+            for suffix in ("}", "]"):
+                end = candidate.rfind(suffix)
+                if end <= 0:
+                    continue
+                try:
+                    parsed = json.loads(candidate[: end + 1])
+                    if parsed:
+                        break
+                except Exception:
+                    pass
+            if parsed is not None:
+                break
+
+    if parsed is None:
+        return raw_text, {}
+
+    return _from_parsed(parsed)
 
 
 def _clean_text(value: Any, max_len: int = 1000) -> str:
@@ -187,262 +325,12 @@ def _extract_cache_records(samples: list[SealQAExample]) -> list[dict[str, str]]
     return records[: WORKSPACE_SEARCH_CACHE_LIMIT * 2]
 
 
-def _build_search_script() -> str:
-    return textwrap.dedent(
-        """
-        #!/usr/bin/env python3
-        import argparse
-        import json
-        import os
-        import re
-        import shlex
-        import subprocess
-        from pathlib import Path
-
-        CACHE_PATH = Path(__file__).resolve().parent / "search_cache.json"
-
-        DEFAULT_TOP_K = 3
-
-        def tokenize(text: str):
-            if not text:
-                return set()
-            return {tok for tok in re.findall(r"[a-z0-9]+", text.lower()) if len(tok) > 1}
-
-
-        def _parse_keywords(raw: str):
-            raw = (raw or "").strip()
-            if not raw:
-                return []
-            return [item.strip() for item in raw.split(",") if item.strip()]
-
-
-        def score(item, query: str):
-            q_tokens = tokenize(query)
-            if not q_tokens:
-                return 0
-            corpus = " ".join(
-                [
-                    item.get("question", ""),
-                    item.get("title", ""),
-                    item.get("snippet", ""),
-                    item.get("text", ""),
-                    " ".join(_parse_keywords(item.get("keywords", ""))),
-                ]
-            )
-            if not corpus:
-                return 0
-            item_tokens = tokenize(corpus)
-            if not item_tokens:
-                return 0
-            return len(q_tokens & item_tokens)
-
-
-        def _parse_external_json(text: str):
-            text = text.strip()
-            if not text:
-                return []
-            try:
-                payload = json.loads(text)
-            except Exception:
-                return []
-            if isinstance(payload, dict):
-                payload = [payload]
-            if not isinstance(payload, list):
-                return []
-            out = []
-            for item in payload:
-                if not isinstance(item, dict):
-                    continue
-                url = str(item.get("url", "")).strip()
-                if not url:
-                    continue
-                out.append(
-                    {
-                        "id": str(item.get("id", url)),
-                        "topic": str(item.get("topic", "")),
-                        "title": str(item.get("title", "")),
-                        "url": url,
-                        "snippet": str(item.get("snippet", "")),
-                        "source": "web_fallback",
-                    }
-                )
-            return out
-
-
-        def _parse_external_lines(text: str):
-            out = []
-            for line in text.splitlines():
-                line = line.strip()
-                if not line.startswith("http"):
-                    continue
-                out.append(
-                    {
-                        "id": line[:64],
-                        "topic": "",
-                        "title": "",
-                        "url": line,
-                        "snippet": "",
-                        "source": "web_fallback",
-                    }
-                )
-            return out
-
-
-        def _fallback_search_command(query: str, top_k: int):
-            cmd = os.getenv("SEALQA_WEB_SEARCH_CMD", "").strip()
-            if not cmd:
-                return []
-            if "{query}" in cmd:
-                cmd = cmd.format(query=shlex.quote(query), top_k=top_k)
-            elif "{top_k}" in cmd:
-                cmd = cmd.format(top_k=top_k, query=shlex.quote(query))
-            else:
-                cmd = f"{cmd} {shlex.quote(query)} {int(top_k)}"
-            try:
-                completed = subprocess.run(
-                    cmd,
-                    shell=True,
-                    text=True,
-                    check=False,
-                    capture_output=True,
-                    timeout=int(os.getenv("SEALQA_WEB_SEARCH_TIMEOUT", "10")),
-                )
-            except Exception:
-                return []
-            if completed.returncode != 0:
-                return []
-            parsed = _parse_external_json(completed.stdout)
-            if parsed:
-                return parsed[: top_k]
-            return _parse_external_lines(completed.stdout)[: top_k]
-
-
-        def _load_cache():
-            if not CACHE_PATH.exists():
-                return []
-            try:
-                return json.loads(CACHE_PATH.read_text(encoding="utf-8"))
-            except Exception:
-                return []
-
-
-        def _search_cached(cache, query: str, top_k: int):
-            scored = []
-            for item in cache:
-                scored.append((score(item, query), item))
-            scored.sort(key=lambda pair: pair[0], reverse=True)
-            results = []
-            for item_score, item in scored[:top_k]:
-                if item_score <= 0 and not os.getenv("SEALQA_ASO_ENABLE_WEB_FALLBACK", "0") == "1":
-                    break
-                results.append(
-                    {
-                        "id": item.get("id", ""),
-                        "topic": item.get("topic", ""),
-                        "title": item.get("title", ""),
-                        "url": item.get("url", ""),
-                        "snippet": item.get("snippet", ""),
-                        "source": "cache",
-                    }
-                )
-            if results:
-                return results
-            if os.getenv("SEALQA_ASO_ENABLE_WEB_FALLBACK", "0") != "1":
-                return []
-            return _fallback_search_command(query, top_k)
-
-
-        def main():
-            parser = argparse.ArgumentParser()
-            parser.add_argument("--query", required=True)
-            parser.add_argument("--top-k", type=int, default=DEFAULT_TOP_K)
-            args = parser.parse_args()
-            cache = _load_cache()
-            results = _search_cached(cache, args.query, args.top_k)
-            print(json.dumps(results, ensure_ascii=False, indent=2))
-
-
-        if __name__ == "__main__":
-            main()
-        """
-    ).strip() + "\n"
-
-
-def _build_fetch_script() -> str:
-    return textwrap.dedent(
-        """
-        #!/usr/bin/env python3
-        import argparse
-        import json
-        import os
-        import shlex
-        import subprocess
-        from pathlib import Path
-
-        CACHE_PATH = Path(__file__).resolve().parent / "search_cache.json"
-
-        def _load_cache():
-            if not CACHE_PATH.exists():
-                return []
-            try:
-                return json.loads(CACHE_PATH.read_text(encoding="utf-8"))
-            except Exception:
-                return []
-
-
-        def _fallback_fetch(url: str):
-            cmd = os.getenv("SEALQA_WEB_FETCH_CMD", "").strip()
-            if not cmd:
-                return ""
-            if "{url}" in cmd:
-                cmd = cmd.format(url=shlex.quote(url))
-            else:
-                cmd = f"{cmd} {shlex.quote(url)}"
-            try:
-                completed = subprocess.run(
-                    cmd,
-                    shell=True,
-                    text=True,
-                    check=False,
-                    capture_output=True,
-                    timeout=int(os.getenv("SEALQA_WEB_FETCH_TIMEOUT", "10")),
-                )
-            except Exception:
-                return ""
-            if completed.returncode != 0:
-                return ""
-            return completed.stdout.strip()
-
-
-        def main():
-            parser = argparse.ArgumentParser()
-            parser.add_argument("--url", required=True)
-            args = parser.parse_args()
-
-            refs = _load_cache()
-            for item in refs:
-                if item.get("url", "") == args.url:
-                    print(item.get("text", ""))
-                    return
-            if os.getenv("SEALQA_ASO_ENABLE_WEB_FALLBACK", "0") != "1":
-                return
-            fallback = _fallback_fetch(args.url)
-            if fallback:
-                print(fallback)
-
-
-        if __name__ == "__main__":
-            main()
-        """
-    ).strip() + "\n"
-
-
 def _prepare_kode_workspace(workspace: Path) -> None:
     workspace.mkdir(parents=True, exist_ok=True)
     cache_rows = _SEARCH_CACHE[:WORKSPACE_SEARCH_CACHE_LIMIT * 2]
-    (workspace / "search_web.py").write_text(_build_search_script(), encoding="utf-8")
+    (workspace / "search_web.py").write_text(build_search_web_script(), encoding="utf-8")
     (workspace / "search_web.py").chmod(0o755)
-    (workspace / "fetch_url.py").write_text(_build_fetch_script(), encoding="utf-8")
+    (workspace / "fetch_url.py").write_text(build_fetch_script(), encoding="utf-8")
     (workspace / "fetch_url.py").chmod(0o755)
     (workspace / "search_cache.json").write_text(
         json.dumps(cache_rows, ensure_ascii=False, indent=2),
@@ -476,8 +364,8 @@ def _judge_answer(llm: LLMClient, sample: SealQAExample, prediction: str) -> flo
         return 0.0
 
 
-def _run_kode(program: ASOProgram, sample: SealQAExample, label: str) -> str:
-    workspace = WORKSPACES_DIR / f"{label}_{abs(hash(sample.question)) % 10_000_000}"
+def _run_kode(program: ASOProgram, sample: SealQAExample, label: str) -> tuple[str, Dict[str, Any]]:
+    workspace = WORKSPACES_DIR / f"{label}_{_stable_sample_workspace_id(sample, label)}"
     if workspace.exists():
         for item in workspace.iterdir():
             if item.is_dir():
@@ -507,27 +395,57 @@ def _run_kode(program: ASOProgram, sample: SealQAExample, label: str) -> str:
         "--dangerously-skip-permissions",
     ]
     try:
-        proc = subprocess.run(
+        proc = subprocess.Popen(
             command,
             env=env,
-            capture_output=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             text=True,
-            timeout=120,
-            check=False,
+            start_new_session=True,
         )
+        stdout, stderr = proc.communicate(timeout=KODE_TIMEOUT)
     except subprocess.TimeoutExpired:
-        return ""
+        try:
+            pgid = os.getpgid(proc.pid) if proc.pid else None
+        except Exception:
+            pgid = None
+        if pgid:
+            for sig in (signal.SIGTERM, signal.SIGKILL):
+                try:
+                    os.killpg(pgid, sig)
+                except Exception:
+                    pass
+        else:
+            try:
+                proc.terminate()
+            except Exception:
+                pass
+        try:
+            stdout, stderr = proc.communicate(timeout=2)
+        except Exception:
+            stdout, stderr = "", ""
+        sample_key = sample.question[:60] if sample.question else "<no question>"
+        logger.warning(
+            "Kode timeout (program=%s sample=%s): output=%s err=%s",
+            program.version,
+            sample_key,
+            str(stdout)[:200],
+            str(stderr)[:200],
+        )
+        return "", {}
+    returncode = proc.returncode
+    proc = subprocess.CompletedProcess(command, returncode, stdout, stderr)
 
     if not proc.stdout.strip():
         logger.warning("Kode returned empty stdout: %s", proc.stderr.strip())
-        return ""
+        return "", {}
 
     try:
-        data = json.loads(proc.stdout)
-    except json.JSONDecodeError:
-        logger.warning("Invalid Kode JSON: %s", proc.stdout[:200])
-        return ""
-    return str(data.get("result", "")).strip()
+        prediction, metadata = _extract_kode_payload(proc.stdout)
+    except Exception:
+        logger.warning("Invalid Kode output: %s", proc.stdout[:200])
+        return proc.stdout.strip(), {}
+    return prediction, metadata
 
 
 def _run_sample(
@@ -540,7 +458,7 @@ def _run_sample(
     total: int,
 ) -> Tuple[int, Dict[str, object]]:
     t0 = time.time()
-    prediction = _run_kode(program, sample, f"{label}_{idx}")
+    prediction, route_metadata = _run_kode(program, sample, f"{label}_{idx}")
     kode_seconds = time.time() - t0
 
     t1 = time.time()
@@ -549,12 +467,13 @@ def _run_sample(
     total_seconds = time.time() - t0
 
     logger.info(
-        "  [%s] %d/%d topic=%s score=%.0f kode=%.2fs judge=%.2fs total=%.2fs",
+        "  [%s] %d/%d topic=%s score=%.0f route=%s kode=%.2fs judge=%.2fs total=%.2fs",
         label,
         idx,
         total,
         sample.topic,
         score,
+        route_metadata.get("route") or route_metadata.get("selected_skill") or route_metadata.get("path") or "n/a",
         kode_seconds,
         judge_seconds,
         total_seconds,
@@ -565,6 +484,7 @@ def _run_sample(
         "topic": sample.topic,
         "prediction": prediction,
         "score": score,
+        "route_metadata": route_metadata,
         "kode_seconds": round(kode_seconds, 2),
         "judge_seconds": round(judge_seconds, 2),
         "total_seconds": round(total_seconds, 2),
@@ -794,7 +714,14 @@ def _write_state(
 
 
 def main() -> None:
-    assert JUDGE_API_KEY, "Set TREE_LLM_API_KEY or TREE_LLM_JUDGE_API_KEY"
+    if KODE_ACTOR_PROTOCOL == "anthropic":
+        assert (
+            KODE_ACTOR_API_KEY
+            or os.getenv("MINIMAX_API_KEY")
+            or os.getenv("KODE_ACTOR_API_KEY")
+        ), "Set MINIMAX_API_KEY (or KODE_ACTOR_API_KEY) when using Anthropic/MiniMax actor"
+    if JUDGE_PROTOCOL == "anthropic":
+        assert JUDGE_API_KEY, "Set MINIMAX_API_KEY or TREE_LLM_JUDGE_API_KEY for MiniMax judge"
     baseline_program = None
     baseline_eval = None
     result = None
@@ -804,9 +731,17 @@ def main() -> None:
 
     try:
         previous_state = _load_state() if RESUME_ENABLED else None
-        if FORCE_NEW or (OUTPUT_DIR.exists() and not RESUME_ENABLED):
-            import shutil
-            shutil.rmtree(OUTPUT_DIR)
+        if FORCE_NEW:
+            try:
+                if OUTPUT_DIR.exists():
+                    shutil.rmtree(OUTPUT_DIR)
+            except FileNotFoundError:
+                pass
+        elif OUTPUT_DIR.exists() and not RESUME_ENABLED:
+            try:
+                shutil.rmtree(OUTPUT_DIR)
+            except FileNotFoundError:
+                pass
         elif previous_state and previous_state.get("status") == "done" and str(previous_state.get("stage")) == "done":
             logger.info("Existing run has status done; pass SEALQA_ASO_FORCE_NEW=1 to override")
             _write_state(
@@ -866,6 +801,7 @@ def main() -> None:
         logger.info("  actor=%s", KODE_MODEL)
         logger.info("  judge=%s (%s)", JUDGE_MODEL, JUDGE_PROTOCOL)
         logger.info("  concurrency: eval=%d aso=%d", EVAL_MAX_WORKERS, ASO_MAX_WORKERS)
+        logger.info("  apo_hybrid=%s apo_skill_limit=%d", HYBRID_APO, HYBRID_APO_SKILL_LIMIT)
         logger.info("  postprocess: auto_merge=%s auto_prune=%s", AUTO_MERGE, AUTO_PRUNE)
         logger.info("  split sizes: train=%d val=%d test=%d", len(train), len(val), len(test))
         logger.info(
@@ -979,10 +915,14 @@ def main() -> None:
             max_workers=ASO_MAX_WORKERS,
             auto_merge=AUTO_MERGE,
             auto_prune=AUTO_PRUNE,
+            apo_fallback_enabled=HYBRID_APO,
+            apo_fallback_skill_limit=HYBRID_APO_SKILL_LIMIT,
+            trajectory_mode=TRAJECTORY_MODE,
+            trajectory_focus_top_k=TRAJECTORY_FOCUS_TOP_K,
             artifact_dir=ITERATIONS_DIR,
         )
 
-        def runner(program: ASOProgram, sample: SealQAExample) -> str:
+        def runner(program: ASOProgram, sample: SealQAExample) -> Any:
             return _run_kode(program, sample, label=program.version.replace(".", "_"))
 
         def scorer(sample: SealQAExample, prediction: str) -> float:
@@ -1059,6 +999,8 @@ def main() -> None:
                 "judge_base_url": JUDGE_BASE_URL,
                 "eval_max_workers": EVAL_MAX_WORKERS,
                 "aso_max_workers": ASO_MAX_WORKERS,
+                "apo_hybrid": HYBRID_APO,
+                "apo_skill_limit": HYBRID_APO_SKILL_LIMIT,
                 "train_size": len(train),
                 "val_size": len(val),
                 "test_size": len(test),

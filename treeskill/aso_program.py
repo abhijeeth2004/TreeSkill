@@ -30,6 +30,8 @@ class ASOSkill:
     prompt: str
     version: str = "v1.0"
     tags: List[str] = field(default_factory=list)
+    path: str = ""
+    parent_skill: str = ""
 
     def to_skill(self) -> Skill:
         return Skill(
@@ -41,10 +43,14 @@ class ASOSkill:
 
     def render_markdown(self) -> str:
         tag_text = ", ".join(self.tags) if self.tags else "general"
+        path_line = f"Path: {self.path}" if self.path else ""
+        parent_line = f"Parent-Skill: {self.parent_skill}" if self.parent_skill else ""
         return (
             f"## Skill: {self.name}\n"
             f"Description: {self.description}\n"
             f"Tags: {tag_text}\n\n"
+            f"{path_line}\n"
+            f"{parent_line}\n\n"
             f"{self.prompt.strip()}\n"
         )
 
@@ -105,6 +111,8 @@ class ASOProgram:
                     prompt=skill.prompt,
                     version=skill.version,
                     tags=list(skill.tags),
+                    path=skill.path,
+                    parent_skill=skill.parent_skill,
                 )
                 for skill in self.skills
             ],
@@ -136,6 +144,8 @@ class ASOProgram:
                     "prompt": skill.prompt,
                     "version": skill.version,
                     "tags": skill.tags,
+                    "path": skill.path,
+                    "parent_skill": skill.parent_skill,
                 }
                 for skill in self.skills
             ],

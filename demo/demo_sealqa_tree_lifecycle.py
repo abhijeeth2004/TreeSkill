@@ -21,7 +21,7 @@ import os
 import re
 import shutil
 import subprocess
-import textwrap
+import importlib.util
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -33,6 +33,15 @@ load_dotenv()
 
 from treeskill.aso_program import ASOProgram, ASOSkill
 
+_TOOLKIT_PATH = Path(__file__).resolve().parent / "tools" / "search_toolkit.py"
+_TOOLKIT_SPEC = importlib.util.spec_from_file_location("demo_search_toolkit", _TOOLKIT_PATH)
+if _TOOLKIT_SPEC is None or _TOOLKIT_SPEC.loader is None:
+    raise RuntimeError(f"Cannot load search toolkit: {_TOOLKIT_PATH}")
+_TOOLKIT_MODULE = importlib.util.module_from_spec(_TOOLKIT_SPEC)
+_TOOLKIT_SPEC.loader.exec_module(_TOOLKIT_MODULE)
+build_search_web_script = _TOOLKIT_MODULE.build_search_web_script
+build_fetch_script = _TOOLKIT_MODULE.build_fetch_script
+
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
 
@@ -42,6 +51,14 @@ WORKSPACES_DIR = OUTPUT_DIR / "workspaces"
 SUMMARY_PATH = OUTPUT_DIR / "summary.json"
 
 KODE_MODEL = os.getenv("KODE_ACTOR_MODEL", "MiniMax-M2.7")
+KODE_ACTOR_PROTOCOL = os.getenv("KODE_ACTOR_PROTOCOL", "anthropic")
+KODE_ACTOR_BASE_URL = os.getenv("KODE_ACTOR_BASE_URL", "https://api.minimaxi.com/anthropic")
+KODE_ACTOR_API_KEY = (
+    os.getenv("KODE_ACTOR_API_KEY")
+    or os.getenv("MINIMAX_API_KEY")
+    or os.getenv("TREE_LLM_API_KEY")
+    or ""
+)
 
 
 @dataclass
@@ -93,84 +110,6 @@ def score_answer(sample: DemoSample, prediction: str) -> float:
     return 0.0
 
 
-def build_search_script() -> str:
-    return textwrap.dedent(
-        """
-        #!/usr/bin/env python3
-        import argparse
-        import json
-        import re
-        from pathlib import Path
-
-        def tokenize(text: str):
-            return {tok for tok in re.findall(r"[a-z0-9]+", text.lower()) if len(tok) > 1}
-
-        def score(item, query: str):
-            q = tokenize(query)
-            if not q:
-                return 0
-            text = " ".join([
-                item["question"],
-                item.get("title", ""),
-                " ".join(item.get("keywords", [])),
-                item.get("snippet", ""),
-                item.get("text", ""),
-            ])
-            t = tokenize(text)
-            overlap = len(q & t)
-            return overlap
-
-        def main():
-            parser = argparse.ArgumentParser()
-            parser.add_argument("--query", required=True)
-            parser.add_argument("--top-k", type=int, default=3)
-            args = parser.parse_args()
-
-            refs = json.loads(Path("search_cache.json").read_text(encoding="utf-8"))
-            ranked = sorted(refs, key=lambda item: score(item, args.query), reverse=True)
-            result = []
-            for item in ranked[: args.top_k]:
-                result.append({
-                    "id": item["id"],
-                    "topic": item["topic"],
-                    "title": item["title"],
-                    "url": item["url"],
-                    "snippet": item["snippet"],
-                })
-            print(json.dumps(result, ensure_ascii=False, indent=2))
-
-        if __name__ == "__main__":
-            main()
-        """
-    ).strip() + "\n"
-
-
-def build_fetch_script() -> str:
-    return textwrap.dedent(
-        """
-        #!/usr/bin/env python3
-        import argparse
-        import json
-        from pathlib import Path
-
-        def main():
-            parser = argparse.ArgumentParser()
-            parser.add_argument("--url", required=True)
-            args = parser.parse_args()
-
-            refs = json.loads(Path("search_cache.json").read_text(encoding="utf-8"))
-            for item in refs:
-                if item["url"] == args.url:
-                    print(item["text"])
-                    return
-            print("")
-
-        if __name__ == "__main__":
-            main()
-        """
-    ).strip() + "\n"
-
-
 def write_workspace_assets(workspace: Path, samples: List[DemoSample]) -> None:
     refs = [
         {
@@ -190,7 +129,7 @@ def write_workspace_assets(workspace: Path, samples: List[DemoSample]) -> None:
         encoding="utf-8",
     )
     search_path = workspace / "search_web.py"
-    search_path.write_text(build_search_script(), encoding="utf-8")
+    search_path.write_text(build_search_web_script(), encoding="utf-8")
     search_path.chmod(0o755)
     fetch_path = workspace / "fetch_url.py"
     fetch_path.write_text(build_fetch_script(), encoding="utf-8")
@@ -427,8 +366,14 @@ def run_kode(program: ASOProgram, sample: DemoSample, all_samples: List[DemoSamp
         "json",
         "--dangerously-skip-permissions",
     ]
+    env = os.environ.copy()
+    if KODE_ACTOR_API_KEY:
+        env["TREE_LLM_API_KEY"] = KODE_ACTOR_API_KEY
+    env["TREE_LLM_BASE_URL"] = KODE_ACTOR_BASE_URL
+    env["TREE_LLM_PROTOCOL"] = KODE_ACTOR_PROTOCOL
+    env["TREE_LLM_MODEL"] = KODE_MODEL
     try:
-        proc = subprocess.run(command, capture_output=True, text=True, timeout=120, check=False)
+        proc = subprocess.run(command, capture_output=True, text=True, timeout=120, check=False, env=env)
     except subprocess.TimeoutExpired:
         logger.warning("[%s] timeout for %s", label, sample.id)
         return ""
@@ -507,6 +452,8 @@ def save_phase(name: str, program: ASOProgram, score: float, rows: List[Dict[str
 
 
 def main() -> None:
+    if KODE_ACTOR_PROTOCOL == "anthropic":
+        assert KODE_ACTOR_API_KEY, "Set MINIMAX_API_KEY (or KODE_ACTOR_API_KEY) when using Anthropic/MiniMax."
     if OUTPUT_DIR.exists():
         shutil.rmtree(OUTPUT_DIR)
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)

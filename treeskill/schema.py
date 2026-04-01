@@ -351,3 +351,10 @@ class Trace(BaseModel):
         description="Dot-separated path of the SkillNode that handled this trace "
         "(e.g. 'social.moments'). Used by APO to route traces to the correct node.",
     )
+    metadata: Dict[str, Any] = Field(
+        default_factory=dict,
+        description=(
+            "Execution metadata attached by runner/optimizer layers. "
+            "ASO can use this for trajectory routing (selected_skill, path, route hints)."
+        ),
+    )

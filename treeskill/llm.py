@@ -33,6 +33,7 @@ _MAX_TOOL_ITERATIONS = 24
 _MAX_RETRIES = 5
 _BASE_DELAY = 1.0    # seconds
 _MAX_DELAY = 60.0    # seconds
+_DEFAULT_REQUEST_TIMEOUT_SECONDS = 45.0
 
 # HTTP status codes / error types that should trigger retry
 _RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}
@@ -136,10 +137,16 @@ class LLMClient:
             if protocol == "anthropic":
                 import anthropic
                 self._clients[key] = anthropic.Anthropic(
-                    api_key=api_key, base_url=base_url,
+                    api_key=api_key,
+                    base_url=base_url,
+                    timeout=_DEFAULT_REQUEST_TIMEOUT_SECONDS,
                 )
             else:
-                self._clients[key] = openai.OpenAI(api_key=api_key, base_url=base_url)
+                self._clients[key] = openai.OpenAI(
+                    api_key=api_key,
+                    base_url=base_url,
+                    timeout=_DEFAULT_REQUEST_TIMEOUT_SECONDS,
+                )
         return self._clients[key]
 
     def _get_async_client(self, role: Optional[str] = None) -> Any:
@@ -150,10 +157,16 @@ class LLMClient:
             if protocol == "anthropic":
                 import anthropic
                 self._async_clients[key] = anthropic.AsyncAnthropic(
-                    api_key=api_key, base_url=base_url,
+                    api_key=api_key,
+                    base_url=base_url,
+                    timeout=_DEFAULT_REQUEST_TIMEOUT_SECONDS,
                 )
             else:
-                self._async_clients[key] = openai.AsyncOpenAI(api_key=api_key, base_url=base_url)
+                self._async_clients[key] = openai.AsyncOpenAI(
+                    api_key=api_key,
+                    base_url=base_url,
+                    timeout=_DEFAULT_REQUEST_TIMEOUT_SECONDS,
+                )
         return self._async_clients[key]
 
     # ------------------------------------------------------------------
